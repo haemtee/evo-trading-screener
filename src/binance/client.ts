@@ -34,6 +34,16 @@ export interface OrderResponse {
   stopPrice?: string;
 }
 
+export interface AlgoOrderResponse {
+  algoId: number;
+  clientAlgoId?: string;
+  algoType?: string;
+  orderType?: string;
+  symbol: string;
+  algoStatus?: string;
+  triggerPrice?: string;
+}
+
 export class BinanceApiError extends Error {
   readonly code: number;
   readonly status: number;
@@ -319,13 +329,14 @@ export class BinanceFuturesClient {
   async placeStopLossOrder(
     symbol: string,
     closeSide: 'BUY' | 'SELL',
-    stopPrice: string,
-  ): Promise<OrderResponse> {
-    return this.signedRequest<OrderResponse>('POST', '/fapi/v1/order', {
+    triggerPrice: string,
+  ): Promise<AlgoOrderResponse> {
+    return this.signedRequest<AlgoOrderResponse>('POST', '/fapi/v1/algoOrder', {
+      algoType: 'CONDITIONAL',
       symbol,
       side: closeSide,
       type: 'STOP_MARKET',
-      stopPrice,
+      triggerPrice,
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     });
@@ -334,20 +345,28 @@ export class BinanceFuturesClient {
   async placeTakeProfitOrder(
     symbol: string,
     closeSide: 'BUY' | 'SELL',
-    stopPrice: string,
-  ): Promise<OrderResponse> {
-    return this.signedRequest<OrderResponse>('POST', '/fapi/v1/order', {
+    triggerPrice: string,
+  ): Promise<AlgoOrderResponse> {
+    return this.signedRequest<AlgoOrderResponse>('POST', '/fapi/v1/algoOrder', {
+      algoType: 'CONDITIONAL',
       symbol,
       side: closeSide,
       type: 'TAKE_PROFIT_MARKET',
-      stopPrice,
+      triggerPrice,
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     });
   }
 
   async cancelAllOpenOrders(symbol: string): Promise<void> {
-    await this.signedRequest('DELETE', '/fapi/v1/allOpenOrders', { symbol });
+    const results = await Promise.allSettled([
+      this.signedRequest('DELETE', '/fapi/v1/allOpenOrders', { symbol }),
+      this.signedRequest('DELETE', '/fapi/v1/algoOpenOrders', { symbol }),
+    ]);
+    const allFailed = results.every((r) => r.status === 'rejected');
+    if (allFailed && results[0]?.status === 'rejected') {
+      throw results[0].reason;
+    }
   }
 
   async closePositionMarket(symbol: string, positionAmt: number, stepSizeStr: string): Promise<OrderResponse> {

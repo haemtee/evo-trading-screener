@@ -120,7 +120,7 @@ export class TradeExecutor {
 
       try {
         const slOrder = await this.binance.placeStopLossOrder(signal.symbol, closeSide, slPriceStr);
-        slOrderId = String(slOrder.orderId);
+        slOrderId = String(slOrder.algoId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         warnings.push(`SL order failed (${msg})`);
@@ -128,7 +128,7 @@ export class TradeExecutor {
 
       try {
         const tpOrder = await this.binance.placeTakeProfitOrder(signal.symbol, closeSide, tpPriceStr);
-        tpOrderId = String(tpOrder.orderId);
+        tpOrderId = String(tpOrder.algoId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         warnings.push(`TP order failed (${msg})`);

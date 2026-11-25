@@ -13,6 +13,22 @@ export interface TelegramBotDeps {
   executor: TradeExecutor;
 }
 
+export const ADMIN_BOT_COMMANDS = [
+  { command: 'start', description: 'Show bot overview & commands' },
+  { command: 'status', description: 'Show scanner, stream & risk settings' },
+  { command: 'watchlist', description: 'Show Top Gainers & Losers (> $5M vol)' },
+  { command: 'scan', description: 'Run immediate 15m screener scan' },
+  { command: 'balance', description: 'Show Binance Futures Demo USDT balance' },
+  { command: 'positions', description: 'Show open demo positions & Close buttons' },
+  { command: 'history', description: 'Show recent signals & demo trades' },
+  { command: 'autotrade', description: 'Toggle auto-trading (on | off)' },
+  { command: 'scanner', description: 'Toggle 15m scanner & stream (on | off)' },
+  { command: 'setrisk', description: 'Set risk % per trade (0.25 - 10)' },
+  { command: 'setrr', description: 'Set take profit R:R ratio (1 - 10)' },
+  { command: 'setleverage', description: 'Set futures leverage (1 - 20)' },
+  { command: 'help', description: 'Show command reference' },
+] as const;
+
 export function isAdminUpdate(
   chatId: number | undefined,
   fromId: number | undefined,
@@ -384,10 +400,18 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     }
   });
 
+  async function registerAdminCommands(): Promise<void> {
+    await bot.api.deleteMyCommands();
+    await bot.api.setMyCommands([...ADMIN_BOT_COMMANDS], {
+      scope: { type: 'chat', chat_id: deps.adminChatId },
+    });
+  }
+
   return {
     bot,
     notifySignal,
     notifyTradeClosed,
+    registerAdminCommands,
     attachScanner(s: MarketScanner) {
       scanner = s;
     },

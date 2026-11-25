@@ -51,6 +51,13 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
+  try {
+    await tg.registerAdminCommands();
+    console.log(`[Bot] Registered Telegram command menu for admin chat ${config.adminChatId}`);
+  } catch (err) {
+    console.warn('[Bot] Failed to register Telegram command menu:', err);
+  }
+
   scanner.startScheduler();
   console.log('[Bot] Starting Telegram bot & 15m Futures screener...');
   await tg.bot.start();

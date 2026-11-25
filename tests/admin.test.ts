@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig, validateBotConfig } from '../src/config.ts';
-import { isAdminUpdate } from '../src/telegram/bot.ts';
+import { ADMIN_BOT_COMMANDS, isAdminUpdate } from '../src/telegram/bot.ts';
 
 describe('isAdminUpdate', () => {
   test('allows only when both chatId and fromId match adminChatId', () => {
@@ -31,5 +31,16 @@ describe('adminChatId config validation', () => {
     });
     expect(invalid.adminChatId).toBeNull();
     expect(() => validateBotConfig(invalid)).toThrow('TELEGRAM_ADMIN_CHAT_ID');
+  });
+});
+
+describe('ADMIN_BOT_COMMANDS', () => {
+  test('contains valid Telegram command names and descriptions', () => {
+    expect(ADMIN_BOT_COMMANDS.length).toBeGreaterThanOrEqual(10);
+    for (const cmd of ADMIN_BOT_COMMANDS) {
+      expect(cmd.command).toMatch(/^[a-z0-9_]{1,32}$/);
+      expect(cmd.description.length).toBeGreaterThanOrEqual(3);
+      expect(cmd.description.length).toBeLessThanOrEqual(256);
+    }
   });
 });
