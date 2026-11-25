@@ -52,3 +52,14 @@ Telegram trading screener and execution bot implementing a 15-minute momentum st
 bun test
 bun run typecheck
 ```
+
+## Deploy on Ubuntu VPS (systemd)
+Run as user `ubuntu` (with `.env` configured):
+```bash
+chmod +x scripts/install-service.sh
+./scripts/install-service.sh
+```
+View logs:
+```bash
+sudo journalctl -u evo-trading-screener -f
+```
