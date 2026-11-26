@@ -1,9 +1,11 @@
 import type { BinanceFuturesClient, UserTrade } from '../binance/client.ts';
 import { KlineStreamManager, type StreamStatus } from '../binance/stream.ts';
 import type { AppDatabase } from '../db/database.ts';
-import { detectMomentumSignal } from '../strategy/detector.ts';
+import { detectMomentumSignal, isHtfTrendAligned } from '../strategy/detector.ts';
+import { computeBreakEvenSl } from '../strategy/guards.ts';
+import { formatStep } from '../strategy/risk.ts';
 import { filterWatchlist } from '../strategy/screener.ts';
-import type { Candle, Side, SignalRecord, WatchlistItem } from '../types.ts';
+import type { Candle, DetectedSignal, Side, SignalRecord, WatchlistItem } from '../types.ts';
 
 export interface ClosedTradeSummary {
   symbol: string;
@@ -105,6 +107,7 @@ export class MarketScanner {
     private readonly callbacks: {
       onSignal: (signal: SignalRecord) => Promise<void>;
       onTradeClosed?: (summary: ClosedTradeSummary) => Promise<void>;
+      onBreakEvenMoved?: (symbol: string, side: Side, newSl: number) => Promise<void>;
     },
     options: MarketScannerOptions = {},
   ) {
@@ -143,6 +146,11 @@ export class MarketScanner {
         tradableSymbols,
         settings.minVolumeUsd,
         settings.topN,
+        Date.now(),
+        {
+          minChangePct: settings.min24hChangePct,
+          maxChangePct: settings.max24hChangePct,
+        },
       );
 
       const allWatchlist = [...gainers, ...losers];
@@ -177,11 +185,16 @@ export class MarketScanner {
             const closedCandles = candles.slice(0, -1).slice(-MAX_BUFFER_CANDLES);
             this.candleBuffers.set(item.symbol, closedCandles);
 
-            return detectMomentumSignal(closedCandles, item.side, {
+            const detected = detectMomentumSignal(closedCandles, item.side, {
               symbol: item.symbol,
               emaPeriod: settings.emaPeriod,
               rrRatio: settings.rrRatio,
+              minSlPct: settings.minSlPct / 100,
             });
+            if (!detected) return null;
+            return (await this.checkHtfAlignment(item.symbol, item.side, settings.emaPeriod))
+              ? detected
+              : null;
           }),
         );
 
@@ -247,15 +260,27 @@ export class MarketScanner {
       symbol,
       emaPeriod: settings.emaPeriod,
       rrRatio: settings.rrRatio,
+      minSlPct: settings.minSlPct / 100,
     });
 
     if (!detected) return null;
+    if (!(await this.checkHtfAlignment(symbol, side, settings.emaPeriod))) return null;
 
     const inserted = this.db.insertSignalIfNew(detected);
     if (!inserted) return null;
 
     await this.callbacks.onSignal(inserted);
     return inserted;
+  }
+
+  private async checkHtfAlignment(symbol: string, side: Side, emaPeriod: number): Promise<boolean> {
+    try {
+      const htf = await this.binance.getKlines(symbol, '1h', 30);
+      const closed1h = htf.length > 1 ? htf.slice(0, -1) : htf;
+      return isHtfTrendAligned(closed1h, side, emaPeriod);
+    } catch {
+      return true;
+    }
   }
 
   getStreamStatus(): StreamStatus {
@@ -309,11 +334,16 @@ export class MarketScanner {
       const openTrades = this.db.getOpenTrades();
       if (openTrades.length === 0) return;
 
-      const livePositions = await this.binance.getOpenPositions();
-      const liveSymbols = new Set(livePositions.map((p) => p.symbol));
+      const [livePositions, filters] = await Promise.all([
+        this.binance.getOpenPositions(),
+        this.binance.getDemoExchangeInfo(),
+      ]);
+      const liveBySymbol = new Map(livePositions.map((p) => [p.symbol, p]));
+      const settings = this.db.getSettings();
 
       for (const trade of openTrades) {
-        if (!liveSymbols.has(trade.symbol)) {
+        const livePos = liveBySymbol.get(trade.symbol);
+        if (!livePos) {
           const closedAt = Date.now();
           let userTrades: UserTrade[] = [];
           try {
@@ -339,6 +369,43 @@ export class MarketScanner {
           }
           if (this.callbacks.onTradeClosed) {
             await this.callbacks.onTradeClosed(summary);
+          }
+          continue;
+        }
+
+        if (!trade.beMoved && settings.breakEvenAtR > 0) {
+          const bePrice = computeBreakEvenSl({
+            side: trade.side,
+            entryPrice: trade.entryPrice,
+            stopLoss: trade.stopLoss,
+            markPrice: livePos.markPrice,
+            breakEvenAtR: settings.breakEvenAtR,
+          });
+          if (bePrice !== null) {
+            const tickSize = filters.get(trade.symbol)?.tickSize ?? 0.0001;
+            const formattedBe = formatStep(bePrice, tickSize);
+            const closeSide: 'BUY' | 'SELL' = trade.side === 'LONG' ? 'SELL' : 'BUY';
+            try {
+              if (trade.slOrderId) {
+                try {
+                  await this.binance.cancelAlgoOrder(trade.symbol, trade.slOrderId);
+                } catch {
+                  // Ignore if old SL was already cancelled
+                }
+              }
+              const newSlOrder = await this.binance.placeStopLossOrder(
+                trade.symbol,
+                closeSide,
+                formattedBe,
+              );
+              const newSlNum = Number(formattedBe);
+              this.db.markTradeBreakEven(trade.id, newSlNum, String(newSlOrder.algoId));
+              if (this.callbacks.onBreakEvenMoved) {
+                await this.callbacks.onBreakEvenMoved(trade.symbol, trade.side, newSlNum);
+              }
+            } catch (err) {
+              console.error(`[Scanner] Break-even move failed for ${trade.symbol}:`, err);
+            }
           }
         }
       }

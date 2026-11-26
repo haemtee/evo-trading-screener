@@ -47,6 +47,8 @@ Telegram trading screener and execution bot implementing a 15-minute momentum st
 - `/setrr <ratio>` — Take profit R:R ratio (1–10)
 - `/setleverage <x>` — Futures leverage (1–20)
 - `/setmaxpos <n>` — Max open positions (1–20)
+- `/setdailyloss <pct>` — Daily max loss limit % (0.5–20)
+- `/setbe <r>` — Auto break-even SL trigger in R (0 = off, 0.5–5)
 
 ## Development
 ```bash

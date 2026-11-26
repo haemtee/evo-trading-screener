@@ -101,6 +101,7 @@ export interface TradeRecord {
   pnlUsd: number | null;
   closePrice: number | null;
   feeUsd: number | null;
+  beMoved: boolean;
   openedAt: number;
   closedAt: number | null;
 }
@@ -115,4 +116,13 @@ export interface BotSettings {
   minVolumeUsd: number;
   topN: number;
   emaPeriod: number;
+  dailyMaxLossPct: number;
+  maxConsecutiveLosses: number;
+  lossCooldownMinutes: number;
+  symbolCooldownMinutes: number;
+  breakEvenAtR: number;
+  minSlPct: number;
+  maxNotionalEquityMult: number;
+  min24hChangePct: number;
+  max24hChangePct: number;
 }

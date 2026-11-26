@@ -17,6 +17,15 @@ export interface AppConfig {
     leverage: number;
     maxOpenPositions: number;
     autoTrade: boolean;
+    dailyMaxLossPct: number;
+    maxConsecutiveLosses: number;
+    lossCooldownMinutes: number;
+    symbolCooldownMinutes: number;
+    breakEvenAtR: number;
+    minSlPct: number;
+    maxNotionalEquityMult: number;
+    min24hChangePct: number;
+    max24hChangePct: number;
   };
 }
 
@@ -58,6 +67,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       leverage: parseNumber(env.LEVERAGE, 5),
       maxOpenPositions: parseNumber(env.MAX_OPEN_POSITIONS, 3),
       autoTrade: parseBoolean(env.AUTO_TRADE, false),
+      dailyMaxLossPct: parseNumber(env.DAILY_MAX_LOSS_PCT, 3),
+      maxConsecutiveLosses: parseNumber(env.MAX_CONSECUTIVE_LOSSES, 3),
+      lossCooldownMinutes: parseNumber(env.LOSS_COOLDOWN_MINUTES, 90),
+      symbolCooldownMinutes: parseNumber(env.SYMBOL_COOLDOWN_MINUTES, 180),
+      breakEvenAtR: parseNumber(env.BREAK_EVEN_AT_R, 1),
+      minSlPct: parseNumber(env.MIN_SL_PCT, 1),
+      maxNotionalEquityMult: parseNumber(env.MAX_NOTIONAL_EQUITY_MULT, 2),
+      min24hChangePct: parseNumber(env.MIN_24H_CHANGE_PCT, 5),
+      max24hChangePct: parseNumber(env.MAX_24H_CHANGE_PCT, 25),
     },
   };
 }

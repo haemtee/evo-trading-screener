@@ -65,6 +65,28 @@ describe('AppDatabase', () => {
     expect(recent[0]?.pnlUsd).toBe(50);
     expect(recent[0]?.closePrice).toBe(2900);
     expect(recent[0]?.feeUsd).toBe(1.25);
+
+    const lossTrade = db.createTrade({
+      signalId: null,
+      symbol: 'SOLUSDT',
+      side: 'LONG',
+      quantity: 1,
+      entryPrice: 150,
+      stopLoss: 145,
+      takeProfit: 160,
+      riskUsd: 5,
+      leverage: 5,
+      entryOrderId: '201',
+      slOrderId: '202',
+      tpOrderId: '203',
+    });
+    db.markTradeBreakEven(lossTrade.id, 150.2, '204');
+    expect(db.getOpenTrades()[0]?.beMoved).toBe(true);
+    expect(db.getOpenTrades()[0]?.stopLoss).toBe(150.2);
+
+    db.closeTrade(lossTrade.id, -5, 1_700_002_000_000, 145, 0.5);
+    expect(db.getDailyNetPnl(1_700_000_000_000)).toBeCloseTo(50 - 1.25 - 5 - 0.5, 6);
+    expect(db.getLastClosedLossForSymbol('SOLUSDT')?.id).toBe(lossTrade.id);
     db.close();
   });
 });

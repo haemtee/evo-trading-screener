@@ -7,7 +7,7 @@ import {
   type MarketScanner,
   summarizeClosedUserTrades,
 } from '../services/scanner.ts';
-import type { Candle, SignalRecord, WatchlistItem } from '../types.ts';
+import type { Candle, Side, SignalRecord, WatchlistItem } from '../types.ts';
 
 export interface TelegramBotDeps {
   token: string;
@@ -31,6 +31,8 @@ export const ADMIN_BOT_COMMANDS = [
   { command: 'setrr', description: 'Set take profit R:R ratio (1 - 10)' },
   { command: 'setleverage', description: 'Set futures leverage (1 - 20)' },
   { command: 'setmaxpos', description: 'Set max open positions (1 - 20)' },
+  { command: 'setdailyloss', description: 'Set daily max loss % (0.5 - 20)' },
+  { command: 'setbe', description: 'Set break-even R trigger (0 = off, 0.5 - 5)' },
   { command: 'help', description: 'Show command reference' },
 ] as const;
 
@@ -226,6 +228,14 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     });
   }
 
+  async function notifyBreakEvenMoved(symbol: string, side: Side, newSl: number): Promise<void> {
+    await bot.api.sendMessage(
+      targetChatId,
+      `🛡️ <b>Break-Even SL Moved:</b> ${symbol} (${side}) → <code>${formatPrice(newSl)}</code>`,
+      { parse_mode: 'HTML' },
+    );
+  }
+
   bot.command(['start', 'help'], async (ctx) => {
     await ctx.reply(
       [
@@ -248,6 +258,8 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         '/setrr &lt;ratio&gt; — Take profit R:R ratio (1 - 10)',
         '/setleverage &lt;x&gt; — Futures leverage (1 - 20)',
         '/setmaxpos &lt;n&gt; — Max open positions (1 - 20)',
+        '/setdailyloss &lt;pct&gt; — Daily max loss % (0.5 - 20)',
+        '/setbe &lt;r&gt; — Break-even SL trigger in R (0 = off)',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -256,6 +268,8 @@ export function createTelegramBot(deps: TelegramBotDeps) {
   bot.command('status', async (ctx) => {
     const s = deps.db.getSettings();
     const openTrades = deps.db.getOpenTrades();
+    const utcDayStart = new Date().setUTCHours(0, 0, 0, 0);
+    const todayNetPnl = deps.db.getDailyNetPnl(utcDayStart);
     const stream = scanner?.getStreamStatus();
     const streamLine = stream
       ? `Live 15m Stream: <b>${stream.connected ? 'CONNECTED' : 'DISCONNECTED'}</b> (${stream.watchedCount} pairs)`
@@ -266,11 +280,11 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         `Scanner: <b>${s.scannerEnabled ? 'ON' : 'OFF'}</b>`,
         streamLine,
         `Auto-Trade: <b>${s.autoTrade ? 'ON' : 'OFF'}</b>`,
-        `Risk / Trade: <b>${s.riskPct}%</b>`,
-        `Take Profit: <b>${s.rrRatio}R</b>`,
-        `Leverage: <b>${s.leverage}x</b> (ISOLATED)`,
-        `Max Open Positions: <b>${s.maxOpenPositions}</b> (Tracked Open: ${openTrades.length})`,
-        `Min 24h Volume: <b>${formatUsd(s.minVolumeUsd)}</b> | Top N: <b>${s.topN}</b>`,
+        `Risk / Trade: <b>${s.riskPct}%</b> | TP: <b>${s.rrRatio}R</b> | Lev: <b>${s.leverage}x</b>`,
+        `Max Positions: <b>${s.maxOpenPositions}</b> (Tracked Open: ${openTrades.length})`,
+        `Today Net PnL: <b>${todayNetPnl >= 0 ? '+' : ''}$${todayNetPnl.toFixed(2)}</b> | Daily Max Loss: <b>-${s.dailyMaxLossPct}%</b>`,
+        `Break-Even: <b>${s.breakEvenAtR > 0 ? `+${s.breakEvenAtR}R` : 'OFF'}</b> | Min SL: <b>${s.minSlPct}%</b>`,
+        `24h Screener Band: <b>${s.min24hChangePct}% - ${s.max24hChangePct}%</b> | Min Vol: <b>${formatUsd(s.minVolumeUsd)}</b>`,
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -477,6 +491,29 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     await ctx.reply(`Max open positions updated to <b>${val}</b>.`, { parse_mode: 'HTML' });
   });
 
+  bot.command('setdailyloss', async (ctx) => {
+    const val = Number(ctx.match.trim());
+    if (!Number.isFinite(val) || val < 0.5 || val > 20) {
+      await ctx.reply('Usage: /setdailyloss <pct> (must be between 0.5 and 20)');
+      return;
+    }
+    deps.db.setSetting('daily_max_loss_pct', String(val));
+    await ctx.reply(`Daily max loss limit updated to <b>-${val}%</b>.`, { parse_mode: 'HTML' });
+  });
+
+  bot.command('setbe', async (ctx) => {
+    const val = Number(ctx.match.trim());
+    if (!Number.isFinite(val) || (val !== 0 && (val < 0.5 || val > 5))) {
+      await ctx.reply('Usage: /setbe <r> (0 to disable, or between 0.5 and 5)');
+      return;
+    }
+    deps.db.setSetting('break_even_at_r', String(val));
+    await ctx.reply(
+      val === 0 ? 'Auto Break-Even is now <b>OFF</b>.' : `Auto Break-Even updated to <b>+${val}R</b>.`,
+      { parse_mode: 'HTML' },
+    );
+  });
+
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
 
@@ -568,6 +605,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     bot,
     notifySignal,
     notifyTradeClosed,
+    notifyBreakEvenMoved,
     registerAdminCommands,
     attachScanner(s: MarketScanner) {
       scanner = s;

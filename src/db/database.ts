@@ -23,6 +23,15 @@ export interface DefaultSettingsInput {
   leverage: number;
   maxOpenPositions: number;
   autoTrade: boolean;
+  dailyMaxLossPct: number;
+  maxConsecutiveLosses: number;
+  lossCooldownMinutes: number;
+  symbolCooldownMinutes: number;
+  breakEvenAtR: number;
+  minSlPct: number;
+  maxNotionalEquityMult: number;
+  min24hChangePct: number;
+  max24hChangePct: number;
 }
 
 const DEFAULT_FALLBACK: DefaultSettingsInput = {
@@ -34,6 +43,15 @@ const DEFAULT_FALLBACK: DefaultSettingsInput = {
   leverage: 5,
   maxOpenPositions: 3,
   autoTrade: false,
+  dailyMaxLossPct: 3,
+  maxConsecutiveLosses: 3,
+  lossCooldownMinutes: 90,
+  symbolCooldownMinutes: 180,
+  breakEvenAtR: 1,
+  minSlPct: 1,
+  maxNotionalEquityMult: 2,
+  min24hChangePct: 5,
+  max24hChangePct: 25,
 };
 
 export class AppDatabase {
@@ -103,6 +121,7 @@ export class AppDatabase {
         pnl_usd REAL,
         close_price REAL,
         fee_usd REAL,
+        be_moved INTEGER NOT NULL DEFAULT 0,
         opened_at INTEGER NOT NULL,
         closed_at INTEGER
       );
@@ -120,6 +139,9 @@ export class AppDatabase {
     if (!colNames.has('fee_usd')) {
       this.db.exec('ALTER TABLE trades ADD COLUMN fee_usd REAL;');
     }
+    if (!colNames.has('be_moved')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN be_moved INTEGER NOT NULL DEFAULT 0;');
+    }
 
     const seedPairs: Array<[string, string]> = [
       ['scanner_enabled', 'true'],
@@ -131,6 +153,15 @@ export class AppDatabase {
       ['min_volume_usd', String(this.defaults.minVolumeUsd)],
       ['top_n', String(this.defaults.topN)],
       ['ema_period', String(this.defaults.emaPeriod)],
+      ['daily_max_loss_pct', String(this.defaults.dailyMaxLossPct)],
+      ['max_consecutive_losses', String(this.defaults.maxConsecutiveLosses)],
+      ['loss_cooldown_minutes', String(this.defaults.lossCooldownMinutes)],
+      ['symbol_cooldown_minutes', String(this.defaults.symbolCooldownMinutes)],
+      ['break_even_at_r', String(this.defaults.breakEvenAtR)],
+      ['min_sl_pct', String(this.defaults.minSlPct)],
+      ['max_notional_equity_mult', String(this.defaults.maxNotionalEquityMult)],
+      ['min_24h_change_pct', String(this.defaults.min24hChangePct)],
+      ['max_24h_change_pct', String(this.defaults.max24hChangePct)],
     ];
 
     const stmt = this.db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -173,6 +204,15 @@ export class AppDatabase {
       minVolumeUsd: num('min_volume_usd', this.defaults.minVolumeUsd),
       topN: num('top_n', this.defaults.topN),
       emaPeriod: num('ema_period', this.defaults.emaPeriod),
+      dailyMaxLossPct: num('daily_max_loss_pct', this.defaults.dailyMaxLossPct),
+      maxConsecutiveLosses: num('max_consecutive_losses', this.defaults.maxConsecutiveLosses),
+      lossCooldownMinutes: num('loss_cooldown_minutes', this.defaults.lossCooldownMinutes),
+      symbolCooldownMinutes: num('symbol_cooldown_minutes', this.defaults.symbolCooldownMinutes),
+      breakEvenAtR: num('break_even_at_r', this.defaults.breakEvenAtR),
+      minSlPct: num('min_sl_pct', this.defaults.minSlPct),
+      maxNotionalEquityMult: num('max_notional_equity_mult', this.defaults.maxNotionalEquityMult),
+      min24hChangePct: num('min_24h_change_pct', this.defaults.min24hChangePct),
+      max24hChangePct: num('max_24h_change_pct', this.defaults.max24hChangePct),
     };
   }
 
@@ -338,6 +378,42 @@ export class AppDatabase {
       .all(limit) as RawTradeRow[];
     return rows.map(mapTradeRow);
   }
+
+  markTradeBreakEven(id: number, newStopLoss: number, newSlOrderId: string | null): void {
+    this.db
+      .prepare('UPDATE trades SET stop_loss = ?, sl_order_id = ?, be_moved = 1 WHERE id = ?')
+      .run(newStopLoss, newSlOrderId, id);
+  }
+
+  getDailyNetPnl(utcDayStartMs: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(COALESCE(pnl_usd, 0) - COALESCE(fee_usd, 0)), 0) AS total
+         FROM trades
+         WHERE status = 'CLOSED' AND closed_at >= ?`,
+      )
+      .get(utcDayStartMs) as { total: number } | null;
+    return row?.total ?? 0;
+  }
+
+  getRecentClosedTrades(limit = 10): TradeRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM trades WHERE status = 'CLOSED' ORDER BY closed_at DESC, id DESC LIMIT ?")
+      .all(limit) as RawTradeRow[];
+    return rows.map(mapTradeRow);
+  }
+
+  getLastClosedLossForSymbol(symbol: string): TradeRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM trades
+         WHERE symbol = ? AND status = 'CLOSED' AND (COALESCE(pnl_usd, 0) - COALESCE(fee_usd, 0)) < 0
+         ORDER BY closed_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(symbol) as RawTradeRow | null;
+    return row ? mapTradeRow(row) : null;
+  }
 }
 
 interface RawSignalRow {
@@ -374,6 +450,7 @@ interface RawTradeRow {
   pnl_usd: number | null;
   close_price: number | null;
   fee_usd: number | null;
+  be_moved: number | null;
   opened_at: number;
   closed_at: number | null;
 }
@@ -415,6 +492,7 @@ function mapTradeRow(r: RawTradeRow): TradeRecord {
     pnlUsd: r.pnl_usd,
     closePrice: r.close_price ?? null,
     feeUsd: r.fee_usd ?? null,
+    beMoved: Boolean(r.be_moved),
     openedAt: r.opened_at,
     closedAt: r.closed_at,
   };

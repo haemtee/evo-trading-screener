@@ -82,4 +82,24 @@ describe('calculatePositionSize', () => {
     expect(res.rejectedReason).toBeUndefined();
     expect(res.quantity).toBe(50_000);
   });
+
+  test('caps notional to equity * maxNotionalEquityMult', () => {
+    // Equity $1000, 1% risk = $10, tight 0.1% SL -> raw notional would be $10,000, capped at 2x equity = $2,000
+    const res = calculatePositionSize({
+      equity: 1000,
+      availableBalance: 1000,
+      riskPct: 1,
+      leverage: 10,
+      entryPrice: 100,
+      stopLoss: 99.9,
+      stepSize: 1,
+      minQty: 1,
+      maxNotionalEquityMult: 2,
+      minNotional: 5,
+    });
+
+    expect(res.rejectedReason).toBeUndefined();
+    expect(res.quantity).toBe(20);
+    expect(res.notionalUsd).toBe(2000);
+  });
 });

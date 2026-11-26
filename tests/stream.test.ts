@@ -74,10 +74,10 @@ describe('MarketScanner live stream integration', () => {
     // Add a red pullback candle as the last closed candle, plus a forming candle at the end
     const prevRed: Candle = {
       openTime: 33 * 900_000,
-      open: lastClosed.close + 0.2,
-      high: lastClosed.close + 0.3,
-      low: lastClosed.close - 0.5,
-      close: lastClosed.close - 0.3,
+      open: lastClosed.close + 0.3,
+      high: lastClosed.close + 0.4,
+      low: lastClosed.close - 0.9,
+      close: lastClosed.close - 0.7,
       volume: 1000,
       closeTime: 34 * 900_000 - 1,
       quoteVolume: 100_000,
@@ -125,7 +125,10 @@ describe('MarketScanner live stream integration', () => {
       async get24hTickers() {
         return tickers;
       },
-      async getKlines() {
+      async getKlines(_symbol: string, interval = '15m') {
+        if (interval === '1h') {
+          return buildUptrendSeed(25);
+        }
         return [...seed, prevRed, formingCandle];
       },
     } as unknown as BinanceFuturesClient;
@@ -167,9 +170,9 @@ describe('MarketScanner live stream integration', () => {
     const closedStreamCandle: Candle = {
       openTime: 34 * 900_000,
       open: prevRed.close - 0.05,
-      high: prevRed.open + 0.55,
+      high: prevRed.open + 0.65,
       low: prevRed.close - 0.1,
-      close: prevRed.open + 0.5,
+      close: prevRed.open + 0.6,
       volume: 2200,
       closeTime: 35 * 900_000 - 1,
       quoteVolume: 220_000,

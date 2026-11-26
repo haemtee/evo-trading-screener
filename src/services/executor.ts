@@ -1,5 +1,6 @@
 import type { BinanceFuturesClient } from '../binance/client.ts';
 import type { AppDatabase } from '../db/database.ts';
+import { evaluateCircuitBreakers } from '../strategy/guards.ts';
 import { calculatePositionSize, formatStep } from '../strategy/risk.ts';
 import type { TradeRecord } from '../types.ts';
 
@@ -56,6 +57,29 @@ export class TradeExecutor {
         };
       }
 
+      const now = Date.now();
+      const utcDayStart = new Date(now).setUTCHours(0, 0, 0, 0);
+      const breaker = evaluateCircuitBreakers({
+        symbol: signal.symbol,
+        equity: balance.balance,
+        dailyNetPnlUsd: this.db.getDailyNetPnl(utcDayStart),
+        dailyMaxLossPct: settings.dailyMaxLossPct,
+        recentClosedTrades: this.db.getRecentClosedTrades(Math.max(5, settings.maxConsecutiveLosses)),
+        maxConsecutiveLosses: settings.maxConsecutiveLosses,
+        lossCooldownMinutes: settings.lossCooldownMinutes,
+        lastSymbolLoss: this.db.getLastClosedLossForSymbol(signal.symbol),
+        symbolCooldownMinutes: settings.symbolCooldownMinutes,
+        now,
+      });
+
+      if (!breaker.allowed) {
+        this.db.updateSignalStatus(signal.id, 'SKIPPED');
+        return {
+          ok: false,
+          error: breaker.reason ?? 'Blocked by circuit breaker.',
+        };
+      }
+
       const sizing = calculatePositionSize({
         equity: balance.balance,
         availableBalance: balance.availableBalance,
@@ -66,6 +90,7 @@ export class TradeExecutor {
         stepSize: filter.stepSize,
         minQty: filter.minQty,
         maxQty: filter.maxQty,
+        maxNotionalEquityMult: settings.maxNotionalEquityMult,
         minNotional: filter.minNotional,
       });
 

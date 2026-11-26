@@ -12,6 +12,9 @@ export interface DetectorOptions {
   maxLeadWickRatio?: number;
   maxTrailWickRatio?: number;
   minVolumeMultiplier?: number;
+  minAvgVolumeMultiplier?: number;
+  minSlPct?: number;
+  minSlAtrMult?: number;
   maxCandleAtrMult?: number;
   maxEmaDistancePct?: number;
   maxConsecutiveCandles?: number;
@@ -28,10 +31,30 @@ const DEFAULT_OPTS: Required<DetectorOptions> = {
   maxLeadWickRatio: 0.15,
   maxTrailWickRatio: 0.20,
   minVolumeMultiplier: 1.2,
+  minAvgVolumeMultiplier: 1.5,
+  minSlPct: 0.01, // 1.0% minimum SL distance
+  minSlAtrMult: 1.0,
   maxCandleAtrMult: 3.0,
   maxEmaDistancePct: 0.04, // 4% from EMA21
   maxConsecutiveCandles: 5,
 };
+
+/**
+ * Checks 1h higher-timeframe EMA(21) trend alignment.
+ */
+export function isHtfTrendAligned(
+  closed1hCandles: Candle[],
+  side: Side,
+  emaPeriod = 21,
+): boolean {
+  if (closed1hCandles.length < emaPeriod + 1) return true;
+  const closes = closed1hCandles.map((c) => c.close);
+  const ema = calculateEMA(closes, emaPeriod);
+  const lastEma = ema[ema.length - 1]!;
+  const lastClose = closes[closes.length - 1]!;
+  if (!Number.isFinite(lastEma)) return true;
+  return side === 'LONG' ? lastClose > lastEma : lastClose < lastEma;
+}
 
 /**
  * Evaluates closed 15m candles for a momentum entry signal:
@@ -97,10 +120,23 @@ export function detectMomentumSignal(
 
   if (leadWickRatio > opts.maxLeadWickRatio) return null;
 
-  // 4. Volume expansion relative to previous candle
+  // 4. Volume expansion relative to previous candle AND 10-candle average
   if (prev.volume <= 0) return null;
   const volumeRatio = curr.volume / prev.volume;
   if (volumeRatio < opts.minVolumeMultiplier) return null;
+
+  const lookbackStart = Math.max(0, n - 11);
+  const lookbackCount = n - 1 - lookbackStart;
+  if (lookbackCount > 0) {
+    let volSum = 0;
+    for (let i = lookbackStart; i < n - 1; i++) {
+      volSum += closedCandles[i]!.volume;
+    }
+    const avgVol = volSum / lookbackCount;
+    if (avgVol > 0 && curr.volume < avgVol * opts.minAvgVolumeMultiplier) {
+      return null;
+    }
+  }
 
   // 5. Pattern classification (Engulfing or Marubozu)
   let pattern: PatternType | null = null;
@@ -159,6 +195,10 @@ export function detectMomentumSignal(
 
   const riskPerUnit = Math.abs(entryPrice - stopLoss);
   if (riskPerUnit <= 0) return null;
+
+  // Enforce minimum SL distance (% and ATR) to avoid fee/noise stop-outs
+  if (riskPerUnit / entryPrice < opts.minSlPct) return null;
+  if (riskPerUnit < atrCurr * opts.minSlAtrMult) return null;
 
   const takeProfit =
     side === 'LONG' ? entryPrice + riskPerUnit * opts.rrRatio : entryPrice - riskPerUnit * opts.rrRatio;

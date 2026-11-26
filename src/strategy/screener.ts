@@ -5,11 +5,16 @@ export interface ScreenedWatchlist {
   losers: WatchlistItem[];
 }
 
+export interface ScreenerBandOptions {
+  minChangePct?: number;
+  maxChangePct?: number;
+}
+
 /**
  * Screens 24h futures tickers:
  * 1. Must exist in `tradableSymbols` (USDT Perpetual & TRADING on Binance Demo)
  * 2. 24h quote volume >= `minVolumeUsd` (default $5,000,000)
- * 3. Top N Gainers (priceChangePercent > 0) for LONG, Top N Losers (priceChangePercent < 0) for SHORT
+ * 3. Top N Gainers within [minChangePct, maxChangePct] for LONG, Top N Losers within [-maxChangePct, -minChangePct] for SHORT
  */
 export function filterWatchlist(
   tickers: Ticker24h[],
@@ -17,7 +22,11 @@ export function filterWatchlist(
   minVolumeUsd = 5_000_000,
   topN = 10,
   scannedAt = Date.now(),
+  opts: ScreenerBandOptions = {},
 ): ScreenedWatchlist {
+  const minChangePct = opts.minChangePct ?? 5;
+  const maxChangePct = opts.maxChangePct ?? 25;
+
   const eligible = tickers.filter(
     (t) =>
       tradableSymbols.has(t.symbol) &&
@@ -29,7 +38,7 @@ export function filterWatchlist(
   );
 
   const gainers: WatchlistItem[] = eligible
-    .filter((t) => t.priceChangePercent > 0)
+    .filter((t) => t.priceChangePercent >= minChangePct && t.priceChangePercent <= maxChangePct)
     .sort((a, b) => b.priceChangePercent - a.priceChangePercent)
     .slice(0, topN)
     .map((t) => ({
@@ -42,7 +51,7 @@ export function filterWatchlist(
     }));
 
   const losers: WatchlistItem[] = eligible
-    .filter((t) => t.priceChangePercent < 0)
+    .filter((t) => t.priceChangePercent <= -minChangePct && t.priceChangePercent >= -maxChangePct)
     .sort((a, b) => a.priceChangePercent - b.priceChangePercent)
     .slice(0, topN)
     .map((t) => ({

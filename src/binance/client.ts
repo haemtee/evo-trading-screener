@@ -419,6 +419,10 @@ export class BinanceFuturesClient {
     });
   }
 
+  async cancelAlgoOrder(symbol: string, algoId: string): Promise<void> {
+    await this.signedRequest('DELETE', '/fapi/v1/algoOrder', { symbol, algoId });
+  }
+
   async cancelAllOpenOrders(symbol: string): Promise<void> {
     const results = await Promise.allSettled([
       this.signedRequest('DELETE', '/fapi/v1/allOpenOrders', { symbol }),

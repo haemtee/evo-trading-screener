@@ -8,6 +8,7 @@ export interface PositionSizeInput {
   stepSize: number;
   minQty: number;
   maxQty?: number;
+  maxNotionalEquityMult?: number;
   minNotional: number;
 }
 
@@ -78,7 +79,12 @@ export function calculatePositionSize(input: PositionSizeInput): PositionSizeRes
   const targetRiskUsd = input.equity * (input.riskPct / 100);
   const rawQty = targetRiskUsd / riskPerUnit;
 
-  const maxNotional = input.availableBalance * input.leverage * 0.95;
+  const leverageNotional = input.availableBalance * input.leverage * 0.95;
+  const equityNotional =
+    input.maxNotionalEquityMult && input.maxNotionalEquityMult > 0
+      ? input.equity * input.maxNotionalEquityMult
+      : Number.POSITIVE_INFINITY;
+  const maxNotional = Math.min(leverageNotional, equityNotional);
   const maxQty = input.maxQty && input.maxQty > 0 ? input.maxQty : Number.POSITIVE_INFINITY;
   const cappedQty = Math.min(rawQty, maxNotional / input.entryPrice, maxQty);
   const quantity = roundStep(cappedQty, input.stepSize, 'floor');
