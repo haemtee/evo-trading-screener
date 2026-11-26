@@ -93,7 +93,7 @@ describe('buildChartLinks & formatSignalMessage', () => {
     expect(links.tradingViewUrl).toBe(
       'https://www.tradingview.com/chart/?symbol=BINANCE:HUMAUSDT.P&interval=15',
     );
-    expect(links.binanceDemoUrl).toBe('https://testnet.binancefuture.com/en/futures/HUMAUSDT');
+    expect(links.binanceDemoUrl).toBe('https://demo.binance.com/en/futures/HUMAUSDT');
 
     const msg = formatSignalMessage(
       {

@@ -146,7 +146,7 @@ export function buildChartLinks(symbol: string): {
   const sym = encodeURIComponent(symbol.toUpperCase());
   return {
     tradingViewUrl: `https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P&interval=15`,
-    binanceDemoUrl: `https://testnet.binancefuture.com/en/futures/${sym}`,
+    binanceDemoUrl: `https://demo.binance.com/en/futures/${sym}`,
   };
 }
 
