@@ -36,7 +36,7 @@ export function evaluateCircuitBreakers(input: CircuitBreakerInput): CircuitBrea
     if (input.dailyNetPnlUsd <= -maxLossUsd) {
       return {
         allowed: false,
-        reason: `Daily loss limit hit (${input.dailyNetPnlUsd.toFixed(2)} <= -${maxLossUsd.toFixed(2)} USDT / -${input.dailyMaxLossPct}%).`,
+        reason: `Daily loss limit reached (${input.dailyNetPnlUsd.toFixed(2)} USDT; limit -${maxLossUsd.toFixed(2)} USDT / -${input.dailyMaxLossPct}%).`,
       };
     }
   }

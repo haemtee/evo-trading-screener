@@ -44,6 +44,10 @@ export function isAdminUpdate(
   return chatId === adminChatId && fromId === adminChatId;
 }
 
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function formatUsd(val: number): string {
   if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(2)}M`;
   if (val >= 1_000) return `$${(val / 1_000).toFixed(1)}K`;
@@ -195,18 +199,23 @@ export function createTelegramBot(deps: TelegramBotDeps) {
       });
       const res = await deps.executor.executeSignal(signal.id);
       if (res.ok && res.trade) {
-        const warn = res.warning ? `\n⚠️ <b>Warning:</b> ${res.warning}` : '';
+        const warn = res.warning ? `\n⚠️ <b>Warning:</b> ${escapeHtml(res.warning)}` : '';
         await bot.api.sendMessage(
           targetChatId,
           `✅ <b>Auto-Executed Demo Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b> (${res.trade.leverage}x)${warn}`,
           { parse_mode: 'HTML' },
         );
       } else {
-        await bot.api.sendMessage(
-          targetChatId,
-          `❌ <b>Auto-Execution Failed (#${signal.id}):</b> ${res.error ?? 'Unknown error'}`,
-          { parse_mode: 'HTML' },
-        );
+        const reason = res.error ?? 'Unknown error';
+        try {
+          await bot.api.sendMessage(
+            targetChatId,
+            `⏸️ <b>Not Executed (#${signal.id}):</b> ${escapeHtml(reason)}`,
+            { parse_mode: 'HTML' },
+          );
+        } catch {
+          await bot.api.sendMessage(targetChatId, `Not Executed (#${signal.id}): ${reason}`);
+        }
       }
       return;
     }
@@ -215,11 +224,15 @@ export function createTelegramBot(deps: TelegramBotDeps) {
       .text('✅ Execute Demo Trade', `exec:${signal.id}`)
       .text('❌ Skip', `skip:${signal.id}`);
 
-    await bot.api.sendMessage(targetChatId, text, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      reply_markup: kb,
-    });
+    await bot.api.sendMessage(
+      targetChatId,
+      `${text}\n\nℹ️ <i>Auto-Trade is OFF — tap button below to open manually.</i>`,
+      {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        reply_markup: kb,
+      },
+    );
   }
 
   async function notifyTradeClosed(summary: ClosedTradeSummary): Promise<void> {
@@ -522,14 +535,17 @@ export function createTelegramBot(deps: TelegramBotDeps) {
       await ctx.answerCallbackQuery({ text: `Executing signal #${signalId}...` });
       const res = await deps.executor.executeSignal(signalId);
       if (res.ok && res.trade) {
-        const warn = res.warning ? `\n⚠️ ${res.warning}` : '';
+        const warn = res.warning ? `\n⚠️ ${escapeHtml(res.warning)}` : '';
         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
         await ctx.reply(
           `✅ <b>Executed Demo Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Entry: <code>${formatPrice(res.trade.entryPrice)}</code> | SL: <code>${formatPrice(res.trade.stopLoss)}</code> | TP: <code>${formatPrice(res.trade.takeProfit)}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b>${warn}`,
           { parse_mode: 'HTML' },
         );
       } else {
-        await ctx.reply(`❌ Execution failed (#${signalId}): ${res.error ?? 'Unknown error'}`);
+        await ctx.reply(
+          `⏸️ <b>Not Executed (#${signalId}):</b> ${escapeHtml(res.error ?? 'Unknown error')}`,
+          { parse_mode: 'HTML' },
+        );
       }
       return;
     }

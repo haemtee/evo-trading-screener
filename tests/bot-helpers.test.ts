@@ -3,6 +3,7 @@ import type { UserTrade } from '../src/binance/client.ts';
 import { summarizeClosedUserTrades } from '../src/services/scanner.ts';
 import {
   buildChartLinks,
+  escapeHtml,
   formatDuration,
   formatSignalMessage,
   summarize1hRange,
@@ -116,5 +117,9 @@ describe('buildChartLinks & formatSignalMessage', () => {
     );
     expect(msg).toContain(links.tradingViewUrl);
     expect(msg).toContain(links.binanceDemoUrl);
+  });
+
+  test('escapeHtml escapes <, >, and & safely for Telegram HTML', () => {
+    expect(escapeHtml('a <= b & c > d')).toBe('a &lt;= b &amp; c &gt; d');
   });
 });
