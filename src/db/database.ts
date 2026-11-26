@@ -101,6 +101,8 @@ export class AppDatabase {
         tp_order_id TEXT,
         status TEXT NOT NULL DEFAULT 'OPEN',
         pnl_usd REAL,
+        close_price REAL,
+        fee_usd REAL,
         opened_at INTEGER NOT NULL,
         closed_at INTEGER
       );
@@ -109,6 +111,15 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
     `);
+
+    const cols = this.db.prepare('PRAGMA table_info(trades)').all() as Array<{ name: string }>;
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has('close_price')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN close_price REAL;');
+    }
+    if (!colNames.has('fee_usd')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN fee_usd REAL;');
+    }
 
     const seedPairs: Array<[string, string]> = [
       ['scanner_enabled', 'true'],
@@ -307,10 +318,18 @@ export class AppDatabase {
     return rows.map(mapTradeRow);
   }
 
-  closeTrade(id: number, pnlUsd: number | null, closedAt = Date.now()): void {
+  closeTrade(
+    id: number,
+    pnlUsd: number | null,
+    closedAt = Date.now(),
+    closePrice: number | null = null,
+    feeUsd: number | null = null,
+  ): void {
     this.db
-      .prepare("UPDATE trades SET status = 'CLOSED', pnl_usd = ?, closed_at = ? WHERE id = ?")
-      .run(pnlUsd, closedAt, id);
+      .prepare(
+        "UPDATE trades SET status = 'CLOSED', pnl_usd = ?, close_price = ?, fee_usd = ?, closed_at = ? WHERE id = ?",
+      )
+      .run(pnlUsd, closePrice, feeUsd, closedAt, id);
   }
 
   getRecentTrades(limit = 10): TradeRecord[] {
@@ -353,6 +372,8 @@ interface RawTradeRow {
   tp_order_id: string | null;
   status: string;
   pnl_usd: number | null;
+  close_price: number | null;
+  fee_usd: number | null;
   opened_at: number;
   closed_at: number | null;
 }
@@ -392,6 +413,8 @@ function mapTradeRow(r: RawTradeRow): TradeRecord {
     tpOrderId: r.tp_order_id,
     status: r.status as TradeStatus,
     pnlUsd: r.pnl_usd,
+    closePrice: r.close_price ?? null,
+    feeUsd: r.fee_usd ?? null,
     openedAt: r.opened_at,
     closedAt: r.closed_at,
   };

@@ -64,4 +64,22 @@ describe('calculatePositionSize', () => {
     expect(res.quantity).toBe(0);
     expect(res.rejectedReason).toContain('minNotional');
   });
+
+  test('caps quantity to exchange maxQty', () => {
+    const res = calculatePositionSize({
+      equity: 100_000,
+      availableBalance: 100_000,
+      riskPct: 1,
+      leverage: 5,
+      entryPrice: 0.01,
+      stopLoss: 0.009,
+      stepSize: 1,
+      minQty: 1,
+      maxQty: 50_000,
+      minNotional: 5,
+    });
+
+    expect(res.rejectedReason).toBeUndefined();
+    expect(res.quantity).toBe(50_000);
+  });
 });

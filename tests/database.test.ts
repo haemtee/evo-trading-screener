@@ -58,11 +58,13 @@ describe('AppDatabase', () => {
     });
 
     expect(db.getOpenTrades()).toHaveLength(1);
-    db.closeTrade(trade.id, 50);
+    db.closeTrade(trade.id, 50, 1_700_001_000_000, 2900, 1.25);
     expect(db.getOpenTrades()).toHaveLength(0);
     const recent = db.getRecentTrades(5);
     expect(recent[0]?.status).toBe('CLOSED');
     expect(recent[0]?.pnlUsd).toBe(50);
+    expect(recent[0]?.closePrice).toBe(2900);
+    expect(recent[0]?.feeUsd).toBe(1.25);
     db.close();
   });
 });

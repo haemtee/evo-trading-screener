@@ -1,9 +1,76 @@
-import type { BinanceFuturesClient } from '../binance/client.ts';
+import type { BinanceFuturesClient, UserTrade } from '../binance/client.ts';
 import { KlineStreamManager, type StreamStatus } from '../binance/stream.ts';
 import type { AppDatabase } from '../db/database.ts';
 import { detectMomentumSignal } from '../strategy/detector.ts';
 import { filterWatchlist } from '../strategy/screener.ts';
 import type { Candle, Side, SignalRecord, WatchlistItem } from '../types.ts';
+
+export interface ClosedTradeSummary {
+  symbol: string;
+  side: Side;
+  quantity: number;
+  entryPrice: number;
+  closePrice: number | null;
+  feeUsd: number | null;
+  pnlUsd: number | null;
+  netPnlUsd: number | null;
+  durationMs: number;
+}
+
+export function summarizeClosedUserTrades(
+  trades: UserTrade[],
+  side: Side,
+  entryPrice: number,
+  quantity: number,
+  durationMs: number,
+  symbol = '',
+): ClosedTradeSummary {
+  if (trades.length === 0) {
+    return {
+      symbol,
+      side,
+      quantity,
+      entryPrice,
+      closePrice: null,
+      feeUsd: null,
+      pnlUsd: null,
+      netPnlUsd: null,
+      durationMs,
+    };
+  }
+
+  const closeSide: 'BUY' | 'SELL' = side === 'LONG' ? 'SELL' : 'BUY';
+  const closingFills = trades.filter((t) => t.side === closeSide || t.realizedPnl !== 0);
+
+  let closePrice: number | null = null;
+  if (closingFills.length > 0) {
+    let weightedSum = 0;
+    let totalQty = 0;
+    for (const f of closingFills) {
+      weightedSum += f.price * f.qty;
+      totalQty += f.qty;
+    }
+    if (totalQty > 0) {
+      closePrice = weightedSum / totalQty;
+    }
+  }
+
+  const pnlUsd = trades.reduce((acc, t) => acc + t.realizedPnl, 0);
+  const feeUsd = trades.reduce((acc, t) => acc + Math.abs(t.commission), 0);
+  const netPnlUsd = pnlUsd - feeUsd;
+
+  return {
+    symbol: trades[0]?.symbol ?? symbol,
+    side,
+    quantity,
+    entryPrice,
+    closePrice,
+    feeUsd,
+    pnlUsd,
+    netPnlUsd,
+    durationMs,
+  };
+}
 
 export interface ScanCycleSummary {
   gainers: WatchlistItem[];
@@ -37,7 +104,7 @@ export class MarketScanner {
     private readonly db: AppDatabase,
     private readonly callbacks: {
       onSignal: (signal: SignalRecord) => Promise<void>;
-      onTradeClosed?: (symbol: string, side: string) => Promise<void>;
+      onTradeClosed?: (summary: ClosedTradeSummary) => Promise<void>;
     },
     options: MarketScannerOptions = {},
   ) {
@@ -247,14 +314,31 @@ export class MarketScanner {
 
       for (const trade of openTrades) {
         if (!liveSymbols.has(trade.symbol)) {
-          this.db.closeTrade(trade.id, null);
+          const closedAt = Date.now();
+          let userTrades: UserTrade[] = [];
+          try {
+            userTrades = await this.binance.getUserTrades(trade.symbol, trade.openedAt - 5_000, 50);
+          } catch {
+            // Fall back to null close metrics if userTrades fails
+          }
+
+          const summary = summarizeClosedUserTrades(
+            userTrades,
+            trade.side,
+            trade.entryPrice,
+            trade.quantity,
+            Math.max(0, closedAt - trade.openedAt),
+            trade.symbol,
+          );
+
+          this.db.closeTrade(trade.id, summary.pnlUsd, closedAt, summary.closePrice, summary.feeUsd);
           try {
             await this.binance.cancelAllOpenOrders(trade.symbol);
           } catch {
             // Ignore cleanup errors
           }
           if (this.callbacks.onTradeClosed) {
-            await this.callbacks.onTradeClosed(trade.symbol, trade.side);
+            await this.callbacks.onTradeClosed(summary);
           }
         }
       }

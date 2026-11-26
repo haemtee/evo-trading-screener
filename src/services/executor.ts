@@ -65,6 +65,7 @@ export class TradeExecutor {
         stopLoss: signal.stopLoss,
         stepSize: filter.stepSize,
         minQty: filter.minQty,
+        maxQty: filter.maxQty,
         minNotional: filter.minNotional,
       });
 

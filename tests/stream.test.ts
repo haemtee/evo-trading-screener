@@ -101,6 +101,7 @@ describe('MarketScanner live stream integration', () => {
           tickSize: 0.01,
           stepSize: 0.001,
           minQty: 0.001,
+          maxQty: 1000,
           minNotional: 5,
           pricePrecision: 2,
           quantityPrecision: 3,

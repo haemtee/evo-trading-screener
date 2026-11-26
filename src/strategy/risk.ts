@@ -7,6 +7,7 @@ export interface PositionSizeInput {
   stopLoss: number;
   stepSize: number;
   minQty: number;
+  maxQty?: number;
   minNotional: number;
 }
 
@@ -78,7 +79,8 @@ export function calculatePositionSize(input: PositionSizeInput): PositionSizeRes
   const rawQty = targetRiskUsd / riskPerUnit;
 
   const maxNotional = input.availableBalance * input.leverage * 0.95;
-  const cappedQty = Math.min(rawQty, maxNotional / input.entryPrice);
+  const maxQty = input.maxQty && input.maxQty > 0 ? input.maxQty : Number.POSITIVE_INFINITY;
+  const cappedQty = Math.min(rawQty, maxNotional / input.entryPrice, maxQty);
   const quantity = roundStep(cappedQty, input.stepSize, 'floor');
 
   if (quantity <= 0 || quantity < input.minQty) {

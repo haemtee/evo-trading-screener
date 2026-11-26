@@ -22,6 +22,20 @@ export interface OpenPosition {
   unRealizedProfit: number;
   leverage: number;
   marginType: string;
+  updateTime: number;
+}
+
+export interface UserTrade {
+  id: number;
+  orderId: number;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  qty: number;
+  realizedPnl: number;
+  commission: number;
+  commissionAsset: string;
+  time: number;
 }
 
 export interface OrderResponse {
@@ -157,6 +171,7 @@ export class BinanceFuturesClient {
           tickSize?: string;
           stepSize?: string;
           minQty?: string;
+          maxQty?: string;
           notional?: string;
         }>;
       }>;
@@ -170,6 +185,8 @@ export class BinanceFuturesClient {
       let tickSize = 0.0001;
       let stepSize = 0.001;
       let minQty = 0.001;
+      let lotMaxQty = Number.POSITIVE_INFINITY;
+      let marketLotMaxQty = Number.POSITIVE_INFINITY;
       let minNotional = 5;
 
       for (const f of s.filters) {
@@ -178,6 +195,13 @@ export class BinanceFuturesClient {
         } else if (f.filterType === 'LOT_SIZE') {
           if (f.stepSize) stepSize = Number(f.stepSize);
           if (f.minQty) minQty = Number(f.minQty);
+          if (f.maxQty) {
+            const parsed = Number(f.maxQty);
+            if (Number.isFinite(parsed) && parsed > 0) lotMaxQty = parsed;
+          }
+        } else if (f.filterType === 'MARKET_LOT_SIZE' && f.maxQty) {
+          const parsed = Number(f.maxQty);
+          if (Number.isFinite(parsed) && parsed > 0) marketLotMaxQty = parsed;
         } else if (f.filterType === 'MIN_NOTIONAL' && f.notional) {
           minNotional = Number(f.notional);
         }
@@ -188,6 +212,7 @@ export class BinanceFuturesClient {
         tickSize,
         stepSize,
         minQty,
+        maxQty: Math.min(lotMaxQty, marketLotMaxQty),
         minNotional,
         pricePrecision: s.pricePrecision,
         quantityPrecision: s.quantityPrecision,
@@ -279,6 +304,7 @@ export class BinanceFuturesClient {
         unRealizedProfit: string;
         leverage: string;
         marginType: string;
+        updateTime?: number;
       }>
     >('GET', '/fapi/v2/positionRisk');
 
@@ -291,8 +317,43 @@ export class BinanceFuturesClient {
         unRealizedProfit: Number(p.unRealizedProfit),
         leverage: Number(p.leverage),
         marginType: p.marginType,
+        updateTime: Number(p.updateTime ?? 0),
       }))
       .filter((p) => Math.abs(p.positionAmt) > 0);
+  }
+
+  async getUserTrades(symbol: string, startTime?: number, limit = 50): Promise<UserTrade[]> {
+    const raw = await this.signedRequest<
+      Array<{
+        id: number;
+        orderId: number;
+        symbol: string;
+        side: 'BUY' | 'SELL';
+        price: string;
+        qty: string;
+        realizedPnl: string;
+        commission: string;
+        commissionAsset: string;
+        time: number;
+      }>
+    >('GET', '/fapi/v1/userTrades', {
+      symbol,
+      ...(startTime !== undefined ? { startTime } : {}),
+      limit,
+    });
+
+    return raw.map((t) => ({
+      id: t.id,
+      orderId: t.orderId,
+      symbol: t.symbol,
+      side: t.side,
+      price: Number(t.price),
+      qty: Number(t.qty),
+      realizedPnl: Number(t.realizedPnl),
+      commission: Number(t.commission),
+      commissionAsset: t.commissionAsset,
+      time: t.time,
+    }));
   }
 
   async setMarginType(symbol: string, marginType: 'ISOLATED' | 'CROSSED'): Promise<void> {

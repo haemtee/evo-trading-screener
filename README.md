@@ -46,6 +46,7 @@ Telegram trading screener and execution bot implementing a 15-minute momentum st
 - `/setrisk <pct>` — Risk % per trade (0.25–10)
 - `/setrr <ratio>` — Take profit R:R ratio (1–10)
 - `/setleverage <x>` — Futures leverage (1–20)
+- `/setmaxpos <n>` — Max open positions (1–20)
 
 ## Development
 ```bash

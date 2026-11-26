@@ -33,6 +33,7 @@ export interface SymbolFilter {
   tickSize: number;
   stepSize: number;
   minQty: number;
+  maxQty: number;
   minNotional: number;
   pricePrecision: number;
   quantityPrecision: number;
@@ -98,6 +99,8 @@ export interface TradeRecord {
   tpOrderId: string | null;
   status: TradeStatus;
   pnlUsd: number | null;
+  closePrice: number | null;
+  feeUsd: number | null;
   openedAt: number;
   closedAt: number | null;
 }
