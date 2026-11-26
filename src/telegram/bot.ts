@@ -57,7 +57,7 @@ function formatPrice(val: number): string {
 export function formatDuration(ms: number): string {
   const safeMs = Math.max(0, ms);
   const totalMinutes = Math.floor(safeMs / 60_000);
-  if (totalMinutes < 1) return '<1m';
+  if (totalMinutes < 1) return `${Math.floor(safeMs / 1000)}s`;
   const days = Math.floor(totalMinutes / 1440);
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const minutes = totalMinutes % 60;

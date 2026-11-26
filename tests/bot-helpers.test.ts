@@ -6,7 +6,7 @@ import type { Candle } from '../src/types.ts';
 
 describe('formatDuration', () => {
   test('formats sub-minute, minutes, hours+minutes, and days+hours', () => {
-    expect(formatDuration(30_000)).toBe('<1m');
+    expect(formatDuration(30_000)).toBe('30s');
     expect(formatDuration(5 * 60_000)).toBe('5m');
     expect(formatDuration((60 + 3) * 60_000)).toBe('1h3m');
     expect(formatDuration((24 + 2) * 60 * 60_000)).toBe('1d2h');
