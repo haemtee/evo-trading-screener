@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import type { UserTrade } from '../src/binance/client.ts';
 import { summarizeClosedUserTrades } from '../src/services/scanner.ts';
-import { formatDuration, summarize1hRange } from '../src/telegram/bot.ts';
+import {
+  buildChartLinks,
+  formatDuration,
+  formatSignalMessage,
+  summarize1hRange,
+} from '../src/telegram/bot.ts';
 import type { Candle } from '../src/types.ts';
 
 describe('formatDuration', () => {
@@ -79,5 +84,37 @@ describe('summarizeClosedUserTrades', () => {
     expect(summary.feeUsd).toBeCloseTo(0.312, 6);
     expect(summary.netPnlUsd).toBeCloseTo(11.688, 6);
     expect(summary.durationMs).toBe(120_000);
+  });
+});
+
+describe('buildChartLinks & formatSignalMessage', () => {
+  test('includes 15m TradingView and Binance Demo chart URLs', () => {
+    const links = buildChartLinks('HUMAUSDT');
+    expect(links.tradingViewUrl).toBe(
+      'https://www.tradingview.com/chart/?symbol=BINANCE:HUMAUSDT.P&interval=15',
+    );
+    expect(links.binanceDemoUrl).toBe('https://testnet.binancefuture.com/en/futures/HUMAUSDT');
+
+    const msg = formatSignalMessage(
+      {
+        id: 50,
+        symbol: 'HUMAUSDT',
+        side: 'SHORT',
+        pattern: 'BEARISH_ENGULFING',
+        candleOpenTime: 1_700_000_000_000,
+        entryPrice: 0.007309,
+        stopLoss: 0.007361,
+        takeProfit: 0.007204,
+        ema21: 0.007382,
+        volumeRatio: 2.25,
+        bodyRatio: 0.89,
+        status: 'PENDING',
+        createdAt: 1_700_000_000_000,
+      },
+      1,
+      2,
+    );
+    expect(msg).toContain(links.tradingViewUrl);
+    expect(msg).toContain(links.binanceDemoUrl);
   });
 });

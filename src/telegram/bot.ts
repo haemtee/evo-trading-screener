@@ -139,9 +139,21 @@ export function formatWatchlistMessage(gainers: WatchlistItem[], losers: Watchli
   return lines.join('\n');
 }
 
+export function buildChartLinks(symbol: string): {
+  tradingViewUrl: string;
+  binanceDemoUrl: string;
+} {
+  const sym = encodeURIComponent(symbol.toUpperCase());
+  return {
+    tradingViewUrl: `https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P&interval=15`,
+    binanceDemoUrl: `https://testnet.binancefuture.com/en/futures/${sym}`,
+  };
+}
+
 export function formatSignalMessage(signal: SignalRecord, riskPct: number, rrRatio: number): string {
   const sideIcon = signal.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
   const patternLabel = signal.pattern.replace('_', ' ');
+  const { tradingViewUrl, binanceDemoUrl } = buildChartLinks(signal.symbol);
   return [
     `🚨 <b>15m Momentum Signal #${signal.id}</b>`,
     ``,
@@ -153,6 +165,7 @@ export function formatSignalMessage(signal: SignalRecord, riskPct: number, rrRat
     `EMA(21): <code>${formatPrice(signal.ema21)}</code>`,
     `Vol Ratio: <b>${signal.volumeRatio.toFixed(2)}x</b> | Body: <b>${(signal.bodyRatio * 100).toFixed(0)}%</b>`,
     `Risk Setting: <b>${riskPct}%</b>`,
+    `Chart (15m): <a href="${tradingViewUrl}">TradingView 15m</a> | <a href="${binanceDemoUrl}">Binance Demo</a>`,
   ].join('\n');
 }
 
@@ -174,7 +187,10 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     const text = formatSignalMessage(signal, settings.riskPct, settings.rrRatio);
 
     if (settings.autoTrade) {
-      await bot.api.sendMessage(targetChatId, text, { parse_mode: 'HTML' });
+      await bot.api.sendMessage(targetChatId, text, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
       const res = await deps.executor.executeSignal(signal.id);
       if (res.ok && res.trade) {
         const warn = res.warning ? `\n⚠️ <b>Warning:</b> ${res.warning}` : '';
@@ -199,6 +215,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
 
     await bot.api.sendMessage(targetChatId, text, {
       parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
       reply_markup: kb,
     });
   }
