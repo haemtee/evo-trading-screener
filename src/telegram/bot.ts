@@ -321,7 +321,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         `Today Net PnL: <b>${todayNetPnl >= 0 ? '+' : ''}$${todayNetPnl.toFixed(2)}</b> | Daily Max Loss: <b>-${s.dailyMaxLossPct}%</b>`,
         `Partial TP: <b>${s.partialTpAtR > 0 ? `${s.partialTpPct}% @ +${s.partialTpAtR}R` : 'OFF'}</b> | Trail: <b>${s.trailingAtrMult > 0 ? `${s.trailingAtrMult}x ATR` : 'OFF'}</b>`,
         `Break-Even: <b>${s.breakEvenAtR > 0 ? `+${s.breakEvenAtR}R` : 'OFF'}</b> | Min SL: <b>${s.minSlPct}%</b>`,
-        `Regime Filters: <b>ADX &ge; ${s.minAdx}</b> | BTC 1h: <b>${s.btcRegimeFilter ? 'ON' : 'OFF'}</b>`,
+        `Regime Filters: <b>ADX ≥ ${s.minAdx}</b> | BTC 1h: <b>${s.btcRegimeFilter ? 'ON' : 'OFF'}</b>`,
         `Peak Equity: <b>$${s.peakEquityUsd.toFixed(2)}</b> | 24h Band: <b>${s.min24hChangePct}%-${s.max24hChangePct}%</b>`,
       ].join('\n'),
       { parse_mode: 'HTML' },
