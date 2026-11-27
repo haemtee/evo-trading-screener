@@ -26,6 +26,12 @@ export interface AppConfig {
     maxNotionalEquityMult: number;
     min24hChangePct: number;
     max24hChangePct: number;
+    partialTpAtR: number;
+    partialTpPct: number;
+    trailingAtrMult: number;
+    minAdx: number;
+    btcRegimeFilter: boolean;
+    dynamicRiskEnabled: boolean;
   };
 }
 
@@ -73,9 +79,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       symbolCooldownMinutes: parseNumber(env.SYMBOL_COOLDOWN_MINUTES, 180),
       breakEvenAtR: parseNumber(env.BREAK_EVEN_AT_R, 1),
       minSlPct: parseNumber(env.MIN_SL_PCT, 1),
-      maxNotionalEquityMult: parseNumber(env.MAX_NOTIONAL_EQUITY_MULT, 2),
+      maxNotionalEquityMult: parseNumber(env.MAX_NOTIONAL_EQUITY_MULT, 5),
       min24hChangePct: parseNumber(env.MIN_24H_CHANGE_PCT, 5),
       max24hChangePct: parseNumber(env.MAX_24H_CHANGE_PCT, 25),
+      partialTpAtR: parseNumber(env.PARTIAL_TP_AT_R, 2),
+      partialTpPct: parseNumber(env.PARTIAL_TP_PCT, 50),
+      trailingAtrMult: parseNumber(env.TRAILING_ATR_MULT, 2),
+      minAdx: parseNumber(env.MIN_ADX, 20),
+      btcRegimeFilter: parseBoolean(env.BTC_REGIME_FILTER, true),
+      dynamicRiskEnabled: parseBoolean(env.DYNAMIC_RISK_ENABLED, true),
     },
   };
 }

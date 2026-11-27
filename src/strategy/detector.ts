@@ -1,5 +1,5 @@
 import type { Candle, DetectedSignal, PatternType, Side } from '../types.ts';
-import { calculateATR, calculateEMA } from './indicators.ts';
+import { calculateADX, calculateATR, calculateEMA } from './indicators.ts';
 
 export interface DetectorOptions {
   symbol?: string;
@@ -18,6 +18,8 @@ export interface DetectorOptions {
   maxCandleAtrMult?: number;
   maxEmaDistancePct?: number;
   maxConsecutiveCandles?: number;
+  minAdx?: number;
+  pullbackTouchPct?: number;
 }
 
 const DEFAULT_OPTS: Required<DetectorOptions> = {
@@ -37,6 +39,8 @@ const DEFAULT_OPTS: Required<DetectorOptions> = {
   maxCandleAtrMult: 3.0,
   maxEmaDistancePct: 0.04, // 4% from EMA21
   maxConsecutiveCandles: 5,
+  minAdx: 0,
+  pullbackTouchPct: 0.006, // 0.6% around EMA21
 };
 
 /**
@@ -54,6 +58,40 @@ export function isHtfTrendAligned(
   const lastClose = closes[closes.length - 1]!;
   if (!Number.isFinite(lastEma)) return true;
   return side === 'LONG' ? lastClose > lastEma : lastClose < lastEma;
+}
+
+/**
+ * Checks macro BTC 1h trend regime using EMA(21) and EMA(50).
+ * Fail-closed when insufficient BTC candles are provided.
+ */
+export function isBtcRegimeAligned(
+  btc1hCandles: Candle[],
+  side: Side,
+  fastPeriod = 21,
+  slowPeriod = 50,
+): boolean {
+  if (btc1hCandles.length < fastPeriod + 1) return false;
+  const closes = btc1hCandles.map((c) => c.close);
+  const emaFast = calculateEMA(closes, fastPeriod);
+  const lastFast = emaFast[emaFast.length - 1]!;
+  const lastClose = closes[closes.length - 1]!;
+  if (!Number.isFinite(lastFast)) return false;
+
+  let lastSlow = Number.NaN;
+  if (btc1hCandles.length >= slowPeriod + 1) {
+    const emaSlow = calculateEMA(closes, slowPeriod);
+    lastSlow = emaSlow[emaSlow.length - 1]!;
+  }
+
+  if (side === 'LONG') {
+    if (lastClose <= lastFast) return false;
+    if (Number.isFinite(lastSlow) && lastFast < lastSlow * 0.998) return false;
+    return true;
+  }
+
+  if (lastClose >= lastFast) return false;
+  if (Number.isFinite(lastSlow) && lastFast > lastSlow * 1.002) return false;
+  return true;
 }
 
 /**
@@ -89,13 +127,21 @@ export function detectMomentumSignal(
     return null;
   }
 
-  // 1. Trend alignment with EMA(21)
+  // 1. Trend alignment with EMA(21) and optional ADX trend-strength filter
   if (side === 'LONG') {
     if (curr.close <= emaCurr) return null;
     if (emaCurr < emaPrev * 0.9995) return null;
   } else {
     if (curr.close >= emaCurr) return null;
     if (emaCurr > emaPrev * 1.0005) return null;
+  }
+
+  if (opts.minAdx > 0) {
+    const adxSeries = calculateADX(closedCandles, opts.atrPeriod);
+    const adxCurr = adxSeries[n - 1]!;
+    if (Number.isFinite(adxCurr) && adxCurr < opts.minAdx) {
+      return null;
+    }
   }
 
   // 2. Candle direction & solid body
@@ -123,7 +169,7 @@ export function detectMomentumSignal(
   // 4. Volume expansion relative to previous candle AND 10-candle average
   if (prev.volume <= 0) return null;
   const volumeRatio = curr.volume / prev.volume;
-  if (volumeRatio < opts.minVolumeMultiplier) return null;
+  let avgVolRatio = Number.POSITIVE_INFINITY;
 
   const lookbackStart = Math.max(0, n - 11);
   const lookbackCount = n - 1 - lookbackStart;
@@ -133,32 +179,48 @@ export function detectMomentumSignal(
       volSum += closedCandles[i]!.volume;
     }
     const avgVol = volSum / lookbackCount;
-    if (avgVol > 0 && curr.volume < avgVol * opts.minAvgVolumeMultiplier) {
-      return null;
+    if (avgVol > 0) {
+      avgVolRatio = curr.volume / avgVol;
     }
   }
 
-  // 5. Pattern classification (Engulfing or Marubozu)
+  // 5. Pattern classification (Engulfing, Marubozu, or EMA Pullback Continuation)
   let pattern: PatternType | null = null;
-  let isEngulfing = false;
+  let useTwoCandleSl = false;
+
+  const hasFullVolume =
+    volumeRatio >= opts.minVolumeMultiplier && avgVolRatio >= opts.minAvgVolumeMultiplier;
+  const hasPullbackVolume = volumeRatio >= 1.1 && avgVolRatio >= 1.2;
 
   if (side === 'LONG') {
     const prevWasRed = prev.close < prev.open;
     const engulfed = prevWasRed && curr.close >= prev.open && curr.open <= prev.close * 1.001;
-    if (engulfed) {
+    const touchedEma = Math.min(curr.low, prev.low) <= emaCurr * (1 + opts.pullbackTouchPct);
+    const pullbackReject = touchedEma && curr.close > prev.high && curr.close > emaCurr;
+
+    if (hasFullVolume && engulfed) {
       pattern = 'BULLISH_ENGULFING';
-      isEngulfing = true;
-    } else if (bodyRatio >= opts.marubozuBodyRatio && trailWickRatio <= opts.maxTrailWickRatio) {
+      useTwoCandleSl = true;
+    } else if (hasFullVolume && bodyRatio >= opts.marubozuBodyRatio && trailWickRatio <= opts.maxTrailWickRatio) {
       pattern = 'BULLISH_MARUBOZU';
+    } else if (hasPullbackVolume && pullbackReject) {
+      pattern = 'BULLISH_PULLBACK';
+      useTwoCandleSl = true;
     }
   } else {
     const prevWasGreen = prev.close > prev.open;
     const engulfed = prevWasGreen && curr.close <= prev.open && curr.open >= prev.close * 0.999;
-    if (engulfed) {
+    const touchedEma = Math.max(curr.high, prev.high) >= emaCurr * (1 - opts.pullbackTouchPct);
+    const pullbackReject = touchedEma && curr.close < prev.low && curr.close < emaCurr;
+
+    if (hasFullVolume && engulfed) {
       pattern = 'BEARISH_ENGULFING';
-      isEngulfing = true;
-    } else if (bodyRatio >= opts.marubozuBodyRatio && trailWickRatio <= opts.maxTrailWickRatio) {
+      useTwoCandleSl = true;
+    } else if (hasFullVolume && bodyRatio >= opts.marubozuBodyRatio && trailWickRatio <= opts.maxTrailWickRatio) {
       pattern = 'BEARISH_MARUBOZU';
+    } else if (hasPullbackVolume && pullbackReject) {
+      pattern = 'BEARISH_PULLBACK';
+      useTwoCandleSl = true;
     }
   }
 
@@ -186,10 +248,10 @@ export function detectMomentumSignal(
   const entryPrice = curr.close;
   let stopLoss: number;
   if (side === 'LONG') {
-    const baseSl = isEngulfing ? Math.min(curr.low, prev.low) : curr.low;
+    const baseSl = useTwoCandleSl ? Math.min(curr.low, prev.low) : curr.low;
     stopLoss = baseSl * (1 - opts.slBufferPct);
   } else {
-    const baseSl = isEngulfing ? Math.max(curr.high, prev.high) : curr.high;
+    const baseSl = useTwoCandleSl ? Math.max(curr.high, prev.high) : curr.high;
     stopLoss = baseSl * (1 + opts.slBufferPct);
   }
 

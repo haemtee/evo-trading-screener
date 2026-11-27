@@ -1,6 +1,6 @@
 import type { BinanceFuturesClient } from '../binance/client.ts';
 import type { AppDatabase } from '../db/database.ts';
-import { evaluateCircuitBreakers } from '../strategy/guards.ts';
+import { computeDynamicRiskPct, evaluateCircuitBreakers } from '../strategy/guards.ts';
 import { calculatePositionSize, formatStep } from '../strategy/risk.ts';
 import type { TradeRecord } from '../types.ts';
 
@@ -59,12 +59,16 @@ export class TradeExecutor {
 
       const now = Date.now();
       const utcDayStart = new Date(now).setUTCHours(0, 0, 0, 0);
+      const peakEquity = this.db.updatePeakEquity(balance.balance);
+      const recentClosedTrades = this.db.getRecentClosedTrades(
+        Math.max(5, settings.maxConsecutiveLosses),
+      );
       const breaker = evaluateCircuitBreakers({
         symbol: signal.symbol,
         equity: balance.balance,
         dailyNetPnlUsd: this.db.getDailyNetPnl(utcDayStart),
         dailyMaxLossPct: settings.dailyMaxLossPct,
-        recentClosedTrades: this.db.getRecentClosedTrades(Math.max(5, settings.maxConsecutiveLosses)),
+        recentClosedTrades,
         maxConsecutiveLosses: settings.maxConsecutiveLosses,
         lossCooldownMinutes: settings.lossCooldownMinutes,
         lastSymbolLoss: this.db.getLastClosedLossForSymbol(signal.symbol),
@@ -80,10 +84,19 @@ export class TradeExecutor {
         };
       }
 
+      const effectiveRiskPct = settings.dynamicRiskEnabled
+        ? computeDynamicRiskPct({
+            baseRiskPct: settings.riskPct,
+            equity: balance.balance,
+            peakEquity,
+            recentClosedTrades,
+          })
+        : settings.riskPct;
+
       const sizing = calculatePositionSize({
         equity: balance.balance,
         availableBalance: balance.availableBalance,
-        riskPct: settings.riskPct,
+        riskPct: effectiveRiskPct,
         leverage: settings.leverage,
         entryPrice: signal.entryPrice,
         stopLoss: signal.stopLoss,
@@ -142,14 +155,39 @@ export class TradeExecutor {
 
       let slOrderId: string | null = null;
       let tpOrderId: string | null = null;
+      let finalSlPrice = Number(slPriceStr);
       const warnings: string[] = [];
 
       try {
         const slOrder = await this.binance.placeStopLossOrder(signal.symbol, closeSide, slPriceStr);
         slOrderId = String(slOrder.algoId);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        warnings.push(`SL order failed (${msg})`);
+      } catch (firstErr) {
+        // Retry once with fresh mark price before emergency-closing the position
+        try {
+          const freshMark = await this.binance.getDemoMarkPrice(signal.symbol);
+          const retrySl =
+            signal.side === 'LONG'
+              ? Math.min(adjustedSl, freshMark - riskDistance)
+              : Math.max(adjustedSl, freshMark + riskDistance);
+          const retrySlStr = formatStep(retrySl, filter.tickSize);
+          const slOrder = await this.binance.placeStopLossOrder(signal.symbol, closeSide, retrySlStr);
+          slOrderId = String(slOrder.algoId);
+          finalSlPrice = Number(retrySlStr);
+        } catch (retryErr) {
+          const signedQty = signal.side === 'LONG' ? sizing.quantity : -sizing.quantity;
+          try {
+            await this.binance.closePositionMarket(signal.symbol, signedQty, String(filter.stepSize));
+          } catch {
+            // Best-effort emergency close
+          }
+          this.db.updateSignalStatus(signal.id, 'FAILED');
+          const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          return {
+            ok: false,
+            error: `SL order failed after retry (${firstMsg}; ${msg}); position emergency-closed.`,
+          };
+        }
       }
 
       try {
@@ -166,7 +204,7 @@ export class TradeExecutor {
         side: signal.side,
         quantity: sizing.quantity,
         entryPrice: fillPrice,
-        stopLoss: Number(slPriceStr),
+        stopLoss: finalSlPrice,
         takeProfit: Number(tpPriceStr),
         riskUsd: sizing.actualRiskUsd,
         leverage: settings.leverage,

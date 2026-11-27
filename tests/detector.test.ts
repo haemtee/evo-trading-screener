@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { detectMomentumSignal, isHtfTrendAligned } from '../src/strategy/detector.ts';
+import { detectMomentumSignal, isBtcRegimeAligned, isHtfTrendAligned } from '../src/strategy/detector.ts';
 import type { Candle } from '../src/types.ts';
 
 function buildUptrendBase(count = 32): Candle[] {
@@ -207,5 +207,52 @@ describe('detectMomentumSignal', () => {
     };
     const sig = detectMomentumSignal([...base, climax], 'LONG', { symbol: 'BTCUSDT' });
     expect(sig).toBeNull();
+  });
+
+  test('detects BULLISH_PULLBACK near EMA21 and rejects when ADX is below minAdx', () => {
+    const base = buildUptrendBase(32);
+    const last = base[base.length - 1]!;
+    // Pullback dips close to EMA21 (~102.x)
+    const pullback: Candle = {
+      openTime: 32 * 900_000,
+      open: last.close,
+      high: last.close + 0.1,
+      low: last.close - 2.3,
+      close: last.close - 1.5,
+      volume: 1000,
+      closeTime: 33 * 900_000 - 1,
+      quoteVolume: 100_000,
+    };
+    const bounce: Candle = {
+      openTime: 33 * 900_000,
+      open: pullback.close,
+      high: last.close + 0.45,
+      low: pullback.close - 0.05,
+      close: last.close + 0.4,
+      volume: 1300, // 1.3x prev/avg -> passes pullback volume (1.1x / 1.2x)
+      closeTime: 34 * 900_000 - 1,
+      quoteVolume: 130_000,
+    };
+
+    const sig = detectMomentumSignal([...base, pullback, bounce], 'LONG', { symbol: 'SOLUSDT' });
+    expect(sig).not.toBeNull();
+    expect(sig!.pattern).toBe('BULLISH_PULLBACK');
+
+    // Uptrend base has ADX ~55-70 -> rejected when minAdx threshold is higher (95)
+    const rejectedByAdx = detectMomentumSignal([...base, pullback, bounce], 'LONG', {
+      symbol: 'SOLUSDT',
+      minAdx: 95,
+    });
+    expect(rejectedByAdx).toBeNull();
+  });
+
+  test('isBtcRegimeAligned checks BTC 1h EMA21/EMA50 direction and fails closed on short history', () => {
+    expect(isBtcRegimeAligned(buildUptrendBase(10), 'LONG')).toBe(false);
+    const upBtc = buildUptrendBase(55);
+    const downBtc = buildDowntrendBase(55);
+    expect(isBtcRegimeAligned(upBtc, 'LONG')).toBe(true);
+    expect(isBtcRegimeAligned(upBtc, 'SHORT')).toBe(false);
+    expect(isBtcRegimeAligned(downBtc, 'SHORT')).toBe(true);
+    expect(isBtcRegimeAligned(downBtc, 'LONG')).toBe(false);
   });
 });

@@ -32,6 +32,12 @@ export interface DefaultSettingsInput {
   maxNotionalEquityMult: number;
   min24hChangePct: number;
   max24hChangePct: number;
+  partialTpAtR?: number;
+  partialTpPct?: number;
+  trailingAtrMult?: number;
+  minAdx?: number;
+  btcRegimeFilter?: boolean;
+  dynamicRiskEnabled?: boolean;
 }
 
 const DEFAULT_FALLBACK: DefaultSettingsInput = {
@@ -52,6 +58,12 @@ const DEFAULT_FALLBACK: DefaultSettingsInput = {
   maxNotionalEquityMult: 2,
   min24hChangePct: 5,
   max24hChangePct: 25,
+  partialTpAtR: 0,
+  partialTpPct: 0,
+  trailingAtrMult: 0,
+  minAdx: 0,
+  btcRegimeFilter: false,
+  dynamicRiskEnabled: false,
 };
 
 export class AppDatabase {
@@ -142,6 +154,16 @@ export class AppDatabase {
     if (!colNames.has('be_moved')) {
       this.db.exec('ALTER TABLE trades ADD COLUMN be_moved INTEGER NOT NULL DEFAULT 0;');
     }
+    if (!colNames.has('initial_stop_loss')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN initial_stop_loss REAL;');
+      this.db.exec('UPDATE trades SET initial_stop_loss = stop_loss WHERE initial_stop_loss IS NULL;');
+    }
+    if (!colNames.has('partial_tp_taken')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN partial_tp_taken INTEGER NOT NULL DEFAULT 0;');
+    }
+    if (!colNames.has('peak_price')) {
+      this.db.exec('ALTER TABLE trades ADD COLUMN peak_price REAL;');
+    }
 
     const seedPairs: Array<[string, string]> = [
       ['scanner_enabled', 'true'],
@@ -162,6 +184,13 @@ export class AppDatabase {
       ['max_notional_equity_mult', String(this.defaults.maxNotionalEquityMult)],
       ['min_24h_change_pct', String(this.defaults.min24hChangePct)],
       ['max_24h_change_pct', String(this.defaults.max24hChangePct)],
+      ['partial_tp_at_r', String(this.defaults.partialTpAtR ?? 0)],
+      ['partial_tp_pct', String(this.defaults.partialTpPct ?? 0)],
+      ['trailing_atr_mult', String(this.defaults.trailingAtrMult ?? 0)],
+      ['min_adx', String(this.defaults.minAdx ?? 0)],
+      ['btc_regime_filter', String(this.defaults.btcRegimeFilter ?? false)],
+      ['dynamic_risk_enabled', String(this.defaults.dynamicRiskEnabled ?? false)],
+      ['peak_equity_usd', '0'],
     ];
 
     const stmt = this.db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -213,6 +242,13 @@ export class AppDatabase {
       maxNotionalEquityMult: num('max_notional_equity_mult', this.defaults.maxNotionalEquityMult),
       min24hChangePct: num('min_24h_change_pct', this.defaults.min24hChangePct),
       max24hChangePct: num('max_24h_change_pct', this.defaults.max24hChangePct),
+      partialTpAtR: num('partial_tp_at_r', this.defaults.partialTpAtR ?? 0),
+      partialTpPct: num('partial_tp_pct', this.defaults.partialTpPct ?? 0),
+      trailingAtrMult: num('trailing_atr_mult', this.defaults.trailingAtrMult ?? 0),
+      minAdx: num('min_adx', this.defaults.minAdx ?? 0),
+      btcRegimeFilter: bool('btc_regime_filter', this.defaults.btcRegimeFilter ?? false),
+      dynamicRiskEnabled: bool('dynamic_risk_enabled', this.defaults.dynamicRiskEnabled ?? false),
+      peakEquityUsd: num('peak_equity_usd', 0),
     };
   }
 
@@ -326,9 +362,9 @@ export class AppDatabase {
     const info = this.db
       .prepare(
         `INSERT INTO trades (
-          signal_id, symbol, side, quantity, entry_price, stop_loss, take_profit,
-          risk_usd, leverage, entry_order_id, sl_order_id, tp_order_id, status, opened_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)`,
+          signal_id, symbol, side, quantity, entry_price, stop_loss, initial_stop_loss, take_profit,
+          risk_usd, leverage, entry_order_id, sl_order_id, tp_order_id, peak_price, status, opened_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)`,
       )
       .run(
         input.signalId,
@@ -337,12 +373,14 @@ export class AppDatabase {
         input.quantity,
         input.entryPrice,
         input.stopLoss,
+        input.stopLoss,
         input.takeProfit,
         input.riskUsd,
         input.leverage,
         input.entryOrderId,
         input.slOrderId,
         input.tpOrderId,
+        input.entryPrice,
         openedAt,
       );
 
@@ -383,6 +421,46 @@ export class AppDatabase {
     this.db
       .prepare('UPDATE trades SET stop_loss = ?, sl_order_id = ?, be_moved = 1 WHERE id = ?')
       .run(newStopLoss, newSlOrderId, id);
+  }
+
+  markTradePartialTp(
+    id: number,
+    newQuantity: number,
+    newStopLoss: number,
+    newSlOrderId: string | null,
+  ): void {
+    this.db
+      .prepare(
+        'UPDATE trades SET quantity = ?, stop_loss = ?, sl_order_id = ?, be_moved = 1, partial_tp_taken = 1 WHERE id = ?',
+      )
+      .run(newQuantity, newStopLoss, newSlOrderId, id);
+  }
+
+  updateTradeTrailingSl(
+    id: number,
+    newStopLoss: number,
+    newSlOrderId: string | null,
+    peakPrice: number,
+  ): void {
+    this.db
+      .prepare('UPDATE trades SET stop_loss = ?, sl_order_id = ?, peak_price = ? WHERE id = ?')
+      .run(newStopLoss, newSlOrderId, peakPrice, id);
+  }
+
+  updateTradePeakPrice(id: number, peakPrice: number): void {
+    this.db.prepare('UPDATE trades SET peak_price = ? WHERE id = ?').run(peakPrice, id);
+  }
+
+  updatePeakEquity(equityUsd: number): number {
+    if (!Number.isFinite(equityUsd) || equityUsd <= 0) {
+      return this.getSettings().peakEquityUsd;
+    }
+    const currentPeak = this.getSettings().peakEquityUsd;
+    if (equityUsd > currentPeak) {
+      this.setSetting('peak_equity_usd', String(equityUsd));
+      return equityUsd;
+    }
+    return currentPeak;
   }
 
   getDailyNetPnl(utcDayStartMs: number): number {
@@ -440,6 +518,7 @@ interface RawTradeRow {
   quantity: number;
   entry_price: number;
   stop_loss: number;
+  initial_stop_loss: number | null;
   take_profit: number;
   risk_usd: number;
   leverage: number;
@@ -451,6 +530,8 @@ interface RawTradeRow {
   close_price: number | null;
   fee_usd: number | null;
   be_moved: number | null;
+  partial_tp_taken: number | null;
+  peak_price: number | null;
   opened_at: number;
   closed_at: number | null;
 }
@@ -482,6 +563,7 @@ function mapTradeRow(r: RawTradeRow): TradeRecord {
     quantity: r.quantity,
     entryPrice: r.entry_price,
     stopLoss: r.stop_loss,
+    initialStopLoss: r.initial_stop_loss ?? r.stop_loss,
     takeProfit: r.take_profit,
     riskUsd: r.risk_usd,
     leverage: r.leverage,
@@ -493,6 +575,8 @@ function mapTradeRow(r: RawTradeRow): TradeRecord {
     closePrice: r.close_price ?? null,
     feeUsd: r.fee_usd ?? null,
     beMoved: Boolean(r.be_moved),
+    partialTpTaken: Boolean(r.partial_tp_taken),
+    peakPrice: r.peak_price ?? null,
     openedAt: r.opened_at,
     closedAt: r.closed_at,
   };

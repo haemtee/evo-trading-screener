@@ -1,11 +1,16 @@
 import type { BinanceFuturesClient, UserTrade } from '../binance/client.ts';
 import { KlineStreamManager, type StreamStatus } from '../binance/stream.ts';
 import type { AppDatabase } from '../db/database.ts';
-import { detectMomentumSignal, isHtfTrendAligned } from '../strategy/detector.ts';
-import { computeBreakEvenSl } from '../strategy/guards.ts';
-import { formatStep } from '../strategy/risk.ts';
+import {
+  detectMomentumSignal,
+  isBtcRegimeAligned,
+  isHtfTrendAligned,
+} from '../strategy/detector.ts';
+import { computeBreakEvenSl, computeTrailingSl } from '../strategy/guards.ts';
+import { calculateATR } from '../strategy/indicators.ts';
+import { formatStep, roundStep } from '../strategy/risk.ts';
 import { filterWatchlist } from '../strategy/screener.ts';
-import type { Candle, DetectedSignal, Side, SignalRecord, WatchlistItem } from '../types.ts';
+import type { Candle, Side, SignalRecord, WatchlistItem } from '../types.ts';
 
 export interface ClosedTradeSummary {
   symbol: string;
@@ -100,6 +105,7 @@ export class MarketScanner {
   private readonly candleBuffers = new Map<string, Candle[]>();
   private readonly stream: KlineStreamManager;
   private readonly watchlistRefreshMinutes: number;
+  private btcRegimeCache: { fetchedAt: number; candles: Candle[] } | null = null;
 
   constructor(
     private readonly binance: BinanceFuturesClient,
@@ -108,6 +114,8 @@ export class MarketScanner {
       onSignal: (signal: SignalRecord) => Promise<void>;
       onTradeClosed?: (summary: ClosedTradeSummary) => Promise<void>;
       onBreakEvenMoved?: (symbol: string, side: Side, newSl: number) => Promise<void>;
+      onPartialTpTaken?: (symbol: string, side: Side, qtyClosed: number, newSl: number) => Promise<void>;
+      onTrailingSlMoved?: (symbol: string, side: Side, newSl: number) => Promise<void>;
     },
     options: MarketScannerOptions = {},
   ) {
@@ -190,8 +198,12 @@ export class MarketScanner {
               emaPeriod: settings.emaPeriod,
               rrRatio: settings.rrRatio,
               minSlPct: settings.minSlPct / 100,
+              minAdx: settings.minAdx,
             });
             if (!detected) return null;
+            if (settings.btcRegimeFilter && !(await this.checkBtcRegime(item.side))) {
+              return null;
+            }
             return (await this.checkHtfAlignment(item.symbol, item.side, settings.emaPeriod))
               ? detected
               : null;
@@ -261,9 +273,11 @@ export class MarketScanner {
       emaPeriod: settings.emaPeriod,
       rrRatio: settings.rrRatio,
       minSlPct: settings.minSlPct / 100,
+      minAdx: settings.minAdx,
     });
 
     if (!detected) return null;
+    if (settings.btcRegimeFilter && !(await this.checkBtcRegime(side))) return null;
     if (!(await this.checkHtfAlignment(symbol, side, settings.emaPeriod))) return null;
 
     const inserted = this.db.insertSignalIfNew(detected);
@@ -279,7 +293,21 @@ export class MarketScanner {
       const closed1h = htf.length > 1 ? htf.slice(0, -1) : htf;
       return isHtfTrendAligned(closed1h, side, emaPeriod);
     } catch {
-      return true;
+      return false;
+    }
+  }
+
+  private async checkBtcRegime(side: Side): Promise<boolean> {
+    const now = Date.now();
+    try {
+      if (!this.btcRegimeCache || now - this.btcRegimeCache.fetchedAt > 300_000) {
+        const raw = await this.binance.getKlines('BTCUSDT', '1h', 60);
+        const closed = raw.length > 1 ? raw.slice(0, -1) : raw;
+        this.btcRegimeCache = { fetchedAt: now, candles: closed };
+      }
+      return isBtcRegimeAligned(this.btcRegimeCache.candles, side);
+    } catch {
+      return false;
     }
   }
 
@@ -313,7 +341,7 @@ export class MarketScanner {
 
     this.syncTimer = setInterval(() => {
       void this.syncOpenTrades();
-    }, 60_000);
+    }, 15_000);
   }
 
   stopScheduler(): void {
@@ -373,22 +401,107 @@ export class MarketScanner {
           continue;
         }
 
-        if (!trade.beMoved && settings.breakEvenAtR > 0) {
+        // Update favorable peak price for trailing stop calculations
+        const prevPeak = trade.peakPrice ?? trade.entryPrice;
+        const newPeak =
+          trade.side === 'LONG'
+            ? Math.max(prevPeak, livePos.markPrice)
+            : Math.min(prevPeak, livePos.markPrice);
+        if (newPeak !== trade.peakPrice) {
+          this.db.updateTradePeakPrice(trade.id, newPeak);
+        }
+
+        const symFilter = filters.get(trade.symbol);
+        const tickSize = symFilter?.tickSize ?? 0.0001;
+        const stepSize = symFilter?.stepSize ?? 0.001;
+        const minQty = symFilter?.minQty ?? stepSize;
+        const closeSide: 'BUY' | 'SELL' = trade.side === 'LONG' ? 'SELL' : 'BUY';
+
+        let currentSl = trade.stopLoss;
+        let currentSlOrderId = trade.slOrderId;
+        let beMoved = trade.beMoved;
+        let partialTpTaken = trade.partialTpTaken;
+
+        // 1. Partial Take Profit + Auto Break-Even
+        if (!partialTpTaken && settings.partialTpAtR > 0 && settings.partialTpPct > 0) {
+          const initialRisk = Math.abs(trade.entryPrice - trade.initialStopLoss);
+          const partialTrigger =
+            trade.side === 'LONG'
+              ? trade.entryPrice + initialRisk * settings.partialTpAtR
+              : trade.entryPrice - initialRisk * settings.partialTpAtR;
+          const reached =
+            initialRisk > 0 &&
+            (trade.side === 'LONG'
+              ? livePos.markPrice >= partialTrigger
+              : livePos.markPrice <= partialTrigger);
+
+          if (reached) {
+            const totalQty = Math.abs(livePos.positionAmt);
+            const partialQty = roundStep(totalQty * (settings.partialTpPct / 100), stepSize, 'floor');
+            const remQty = roundStep(totalQty - partialQty, stepSize, 'floor');
+            if (partialQty >= minQty && remQty >= minQty) {
+              try {
+                await this.binance.placeMarketOrder(
+                  trade.symbol,
+                  closeSide,
+                  formatStep(partialQty, stepSize),
+                  true,
+                );
+                const feeBuffer = 0.0012;
+                const beTarget =
+                  trade.side === 'LONG'
+                    ? trade.entryPrice * (1 + feeBuffer)
+                    : trade.entryPrice * (1 - feeBuffer);
+                const shouldMoveBe =
+                  trade.side === 'LONG' ? beTarget > currentSl : beTarget < currentSl;
+                const nextSl = shouldMoveBe ? beTarget : currentSl;
+                const formattedBe = formatStep(nextSl, tickSize);
+
+                if (shouldMoveBe) {
+                  if (currentSlOrderId) {
+                    try {
+                      await this.binance.cancelAlgoOrder(trade.symbol, currentSlOrderId);
+                    } catch {
+                      // Ignore if old SL was already cancelled
+                    }
+                  }
+                  const newSlOrder = await this.binance.placeStopLossOrder(
+                    trade.symbol,
+                    closeSide,
+                    formattedBe,
+                  );
+                  currentSl = Number(formattedBe);
+                  currentSlOrderId = String(newSlOrder.algoId);
+                }
+
+                this.db.markTradePartialTp(trade.id, remQty, currentSl, currentSlOrderId);
+                partialTpTaken = true;
+                beMoved = true;
+                if (this.callbacks.onPartialTpTaken) {
+                  await this.callbacks.onPartialTpTaken(trade.symbol, trade.side, partialQty, currentSl);
+                }
+              } catch (err) {
+                console.error(`[Scanner] Partial TP failed for ${trade.symbol}:`, err);
+              }
+            }
+          }
+        }
+
+        // 2. Break-Even SL move (if not already moved by partial TP)
+        if (!beMoved && settings.breakEvenAtR > 0) {
           const bePrice = computeBreakEvenSl({
             side: trade.side,
             entryPrice: trade.entryPrice,
-            stopLoss: trade.stopLoss,
+            stopLoss: currentSl,
             markPrice: livePos.markPrice,
             breakEvenAtR: settings.breakEvenAtR,
           });
           if (bePrice !== null) {
-            const tickSize = filters.get(trade.symbol)?.tickSize ?? 0.0001;
             const formattedBe = formatStep(bePrice, tickSize);
-            const closeSide: 'BUY' | 'SELL' = trade.side === 'LONG' ? 'SELL' : 'BUY';
             try {
-              if (trade.slOrderId) {
+              if (currentSlOrderId) {
                 try {
-                  await this.binance.cancelAlgoOrder(trade.symbol, trade.slOrderId);
+                  await this.binance.cancelAlgoOrder(trade.symbol, currentSlOrderId);
                 } catch {
                   // Ignore if old SL was already cancelled
                 }
@@ -398,14 +511,64 @@ export class MarketScanner {
                 closeSide,
                 formattedBe,
               );
-              const newSlNum = Number(formattedBe);
-              this.db.markTradeBreakEven(trade.id, newSlNum, String(newSlOrder.algoId));
+              currentSl = Number(formattedBe);
+              currentSlOrderId = String(newSlOrder.algoId);
+              beMoved = true;
+              this.db.markTradeBreakEven(trade.id, currentSl, currentSlOrderId);
               if (this.callbacks.onBreakEvenMoved) {
-                await this.callbacks.onBreakEvenMoved(trade.symbol, trade.side, newSlNum);
+                await this.callbacks.onBreakEvenMoved(trade.symbol, trade.side, currentSl);
               }
             } catch (err) {
               console.error(`[Scanner] Break-even move failed for ${trade.symbol}:`, err);
             }
+          }
+        }
+
+        // 3. ATR Trailing Stop for runner positions
+        if ((partialTpTaken || beMoved) && settings.trailingAtrMult > 0) {
+          try {
+            let candles = this.candleBuffers.get(trade.symbol);
+            if (!candles || candles.length < 20) {
+              const raw = await this.binance.getKlines(trade.symbol, '15m', 30);
+              candles = raw.length > 1 ? raw.slice(0, -1) : raw;
+            }
+            const atrSeries = calculateATR(candles, 14);
+            const atr = atrSeries[atrSeries.length - 1]!;
+            if (Number.isFinite(atr) && atr > 0) {
+              const trailPrice = computeTrailingSl({
+                side: trade.side,
+                entryPrice: trade.entryPrice,
+                initialStopLoss: trade.initialStopLoss,
+                currentStopLoss: currentSl,
+                peakPrice: newPeak,
+                markPrice: livePos.markPrice,
+                atr,
+                trailingAtrMult: settings.trailingAtrMult,
+                partialTpTaken,
+              });
+              if (trailPrice !== null) {
+                const formattedTrail = formatStep(trailPrice, tickSize);
+                if (currentSlOrderId) {
+                  try {
+                    await this.binance.cancelAlgoOrder(trade.symbol, currentSlOrderId);
+                  } catch {
+                    // Ignore
+                  }
+                }
+                const newSlOrder = await this.binance.placeStopLossOrder(
+                  trade.symbol,
+                  closeSide,
+                  formattedTrail,
+                );
+                const newSlNum = Number(formattedTrail);
+                this.db.updateTradeTrailingSl(trade.id, newSlNum, String(newSlOrder.algoId), newPeak);
+                if (this.callbacks.onTrailingSlMoved) {
+                  await this.callbacks.onTrailingSlMoved(trade.symbol, trade.side, newSlNum);
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[Scanner] Trailing SL move failed for ${trade.symbol}:`, err);
           }
         }
       }

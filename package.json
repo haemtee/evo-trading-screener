@@ -8,7 +8,8 @@
     "start": "bun src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "smoke": "bun src/scripts/smoke.ts"
+    "smoke": "bun src/scripts/smoke.ts",
+    "backtest": "bun src/scripts/backtest.ts"
   },
   "dependencies": {
     "grammy": "^1.48.0"

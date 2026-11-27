@@ -115,3 +115,108 @@ export function computeBreakEvenSl(input: BreakEvenInput): number | null {
   if (beSl >= input.stopLoss || beSl <= input.markPrice) return null;
   return beSl;
 }
+
+export interface TrailingSlInput {
+  side: Side;
+  entryPrice: number;
+  initialStopLoss: number;
+  currentStopLoss: number;
+  peakPrice: number;
+  markPrice: number;
+  atr: number;
+  trailingAtrMult: number;
+  partialTpTaken?: boolean;
+  activateAtR?: number;
+  minImprovePct?: number;
+}
+
+/**
+ * Computes an updated ATR-based trailing stop loss for winning runner positions.
+ * Only activates once the position has reached `activateAtR` (default 1.5R) or `partialTpTaken`.
+ * Returns null if no meaningful SL improvement is warranted.
+ */
+export function computeTrailingSl(input: TrailingSlInput): number | null {
+  if (
+    input.trailingAtrMult <= 0 ||
+    input.atr <= 0 ||
+    input.entryPrice <= 0 ||
+    input.markPrice <= 0 ||
+    input.peakPrice <= 0
+  ) {
+    return null;
+  }
+
+  const initialRisk = Math.abs(input.entryPrice - input.initialStopLoss);
+  if (initialRisk <= 0) return null;
+
+  const activateAtR = input.activateAtR ?? 1.5;
+  const minImprovePct = input.minImprovePct ?? 0.0015;
+  const peakR =
+    input.side === 'LONG'
+      ? (input.peakPrice - input.entryPrice) / initialRisk
+      : (input.entryPrice - input.peakPrice) / initialRisk;
+
+  if (!input.partialTpTaken && peakR < activateAtR) {
+    return null;
+  }
+
+  if (input.side === 'LONG') {
+    const candidate = input.peakPrice - input.atr * input.trailingAtrMult;
+    if (candidate <= input.entryPrice) return null;
+    if (candidate <= input.currentStopLoss * (1 + minImprovePct)) return null;
+    if (candidate >= input.markPrice * 0.998) return null;
+    return candidate;
+  }
+
+  const candidate = input.peakPrice + input.atr * input.trailingAtrMult;
+  if (candidate >= input.entryPrice) return null;
+  if (candidate >= input.currentStopLoss * (1 - minImprovePct)) return null;
+  if (candidate <= input.markPrice * 1.002) return null;
+  return candidate;
+}
+
+export interface DynamicRiskInput {
+  baseRiskPct: number;
+  equity: number;
+  peakEquity: number;
+  recentClosedTrades: TradeRecord[];
+  minRiskPct?: number;
+  maxRiskPct?: number;
+}
+
+/**
+ * Scales risk % dynamically:
+ * - Cuts risk during drawdowns (>= 8% -> 0.75x, >= 15% -> 0.5x) to protect capital
+ * - Scales up (+25%, capped at maxRiskPct) when near peak equity with >= 2 consecutive wins
+ */
+export function computeDynamicRiskPct(input: DynamicRiskInput): number {
+  const minRiskPct = input.minRiskPct ?? 0.5;
+  const maxRiskPct = input.maxRiskPct ?? 3.5;
+
+  const ddPct =
+    input.peakEquity > 0 && input.equity < input.peakEquity
+      ? ((input.peakEquity - input.equity) / input.peakEquity) * 100
+      : 0;
+
+  if (ddPct >= 15) {
+    return Math.max(minRiskPct, Number((input.baseRiskPct * 0.5).toFixed(2)));
+  }
+  if (ddPct >= 8) {
+    return Math.max(minRiskPct, Number((input.baseRiskPct * 0.75).toFixed(2)));
+  }
+
+  let consecutiveWins = 0;
+  for (const t of input.recentClosedTrades) {
+    if (tradeNetPnl(t) > 0) {
+      consecutiveWins++;
+    } else {
+      break;
+    }
+  }
+
+  if (ddPct < 2 && consecutiveWins >= 2) {
+    return Math.min(maxRiskPct, Number((input.baseRiskPct * 1.25).toFixed(2)));
+  }
+
+  return Math.min(maxRiskPct, Math.max(minRiskPct, input.baseRiskPct));
+}

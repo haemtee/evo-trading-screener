@@ -33,6 +33,8 @@ async function main(): Promise<void> {
       onSignal: tg.notifySignal,
       onTradeClosed: tg.notifyTradeClosed,
       onBreakEvenMoved: tg.notifyBreakEvenMoved,
+      onPartialTpTaken: tg.notifyPartialTpTaken,
+      onTrailingSlMoved: tg.notifyTrailingSlMoved,
     },
     {
       wsBaseUrl: config.binanceWsUrl,

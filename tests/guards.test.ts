@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { computeBreakEvenSl, evaluateCircuitBreakers } from '../src/strategy/guards.ts';
+import {
+  computeBreakEvenSl,
+  computeDynamicRiskPct,
+  computeTrailingSl,
+  evaluateCircuitBreakers,
+} from '../src/strategy/guards.ts';
 import type { TradeRecord } from '../src/types.ts';
 
 function makeClosedTrade(overrides: Partial<TradeRecord> = {}): TradeRecord {
@@ -11,6 +16,7 @@ function makeClosedTrade(overrides: Partial<TradeRecord> = {}): TradeRecord {
     quantity: 1,
     entryPrice: 100,
     stopLoss: 98,
+    initialStopLoss: 98,
     takeProfit: 104,
     riskUsd: 10,
     leverage: 5,
@@ -22,6 +28,8 @@ function makeClosedTrade(overrides: Partial<TradeRecord> = {}): TradeRecord {
     closePrice: 98,
     feeUsd: 0.2,
     beMoved: false,
+    partialTpTaken: false,
+    peakPrice: null,
     openedAt: 1_000_000,
     closedAt: 1_100_000,
     ...overrides,
@@ -118,5 +126,85 @@ describe('computeBreakEvenSl', () => {
       breakEvenAtR: 1,
     });
     expect(shortBe).toBeCloseTo(99.88, 4);
+  });
+});
+
+describe('computeTrailingSl', () => {
+  test('trails SL using peakPrice and ATR once runner is in profit', () => {
+    // Entry 100, initialSL 98 (risk = 2), peak 108 (+4R), ATR 1.5, mult 2 -> candidate 105
+    const longTrail = computeTrailingSl({
+      side: 'LONG',
+      entryPrice: 100,
+      initialStopLoss: 98,
+      currentStopLoss: 100.12,
+      peakPrice: 108,
+      markPrice: 107.5,
+      atr: 1.5,
+      trailingAtrMult: 2,
+      partialTpTaken: true,
+    });
+    expect(longTrail).toBeCloseTo(105, 4);
+
+    // Does not activate before 1.5R without partialTpTaken
+    expect(
+      computeTrailingSl({
+        side: 'LONG',
+        entryPrice: 100,
+        initialStopLoss: 98,
+        currentStopLoss: 98,
+        peakPrice: 102,
+        markPrice: 102,
+        atr: 0.5,
+        trailingAtrMult: 2,
+      }),
+    ).toBeNull();
+
+    // SHORT: entry 100, initialSL 102, peak 92 (+4R), ATR 1.5, mult 2 -> candidate 95
+    const shortTrail = computeTrailingSl({
+      side: 'SHORT',
+      entryPrice: 100,
+      initialStopLoss: 102,
+      currentStopLoss: 99.88,
+      peakPrice: 92,
+      markPrice: 92.5,
+      atr: 1.5,
+      trailingAtrMult: 2,
+      partialTpTaken: true,
+    });
+    expect(shortTrail).toBeCloseTo(95, 4);
+  });
+});
+
+describe('computeDynamicRiskPct', () => {
+  test('reduces risk during drawdowns and scales up on win streaks near peak', () => {
+    expect(
+      computeDynamicRiskPct({
+        baseRiskPct: 2,
+        equity: 4200,
+        peakEquity: 5000, // 16% DD
+        recentClosedTrades: [],
+      }),
+    ).toBe(1);
+
+    expect(
+      computeDynamicRiskPct({
+        baseRiskPct: 2,
+        equity: 4550,
+        peakEquity: 5000, // 9% DD
+        recentClosedTrades: [],
+      }),
+    ).toBe(1.5);
+
+    expect(
+      computeDynamicRiskPct({
+        baseRiskPct: 2,
+        equity: 5200,
+        peakEquity: 5200,
+        recentClosedTrades: [
+          makeClosedTrade({ pnlUsd: 40, feeUsd: 1 }),
+          makeClosedTrade({ pnlUsd: 35, feeUsd: 1 }),
+        ],
+      }),
+    ).toBe(2.5);
   });
 });

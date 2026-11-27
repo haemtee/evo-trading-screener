@@ -3,8 +3,10 @@ export type Side = 'LONG' | 'SHORT';
 export type PatternType =
   | 'BULLISH_ENGULFING'
   | 'BULLISH_MARUBOZU'
+  | 'BULLISH_PULLBACK'
   | 'BEARISH_ENGULFING'
-  | 'BEARISH_MARUBOZU';
+  | 'BEARISH_MARUBOZU'
+  | 'BEARISH_PULLBACK';
 
 export type SignalStatus = 'PENDING' | 'EXECUTED' | 'SKIPPED' | 'FAILED';
 
@@ -91,6 +93,7 @@ export interface TradeRecord {
   quantity: number;
   entryPrice: number;
   stopLoss: number;
+  initialStopLoss: number;
   takeProfit: number;
   riskUsd: number;
   leverage: number;
@@ -102,6 +105,8 @@ export interface TradeRecord {
   closePrice: number | null;
   feeUsd: number | null;
   beMoved: boolean;
+  partialTpTaken: boolean;
+  peakPrice: number | null;
   openedAt: number;
   closedAt: number | null;
 }
@@ -125,4 +130,11 @@ export interface BotSettings {
   maxNotionalEquityMult: number;
   min24hChangePct: number;
   max24hChangePct: number;
+  partialTpAtR: number;
+  partialTpPct: number;
+  trailingAtrMult: number;
+  minAdx: number;
+  btcRegimeFilter: boolean;
+  dynamicRiskEnabled: boolean;
+  peakEquityUsd: number;
 }

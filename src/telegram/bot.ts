@@ -33,6 +33,7 @@ export const ADMIN_BOT_COMMANDS = [
   { command: 'setmaxpos', description: 'Set max open positions (1 - 20)' },
   { command: 'setdailyloss', description: 'Set daily max loss % (0.5 - 20)' },
   { command: 'setbe', description: 'Set break-even R trigger (0 = off, 0.5 - 5)' },
+  { command: 'preset', description: 'Apply preset (growth10x | conservative)' },
   { command: 'help', description: 'Show command reference' },
 ] as const;
 
@@ -249,6 +250,27 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     );
   }
 
+  async function notifyPartialTpTaken(
+    symbol: string,
+    side: Side,
+    qtyClosed: number,
+    newSl: number,
+  ): Promise<void> {
+    await bot.api.sendMessage(
+      targetChatId,
+      `💰 <b>Partial TP Taken:</b> ${symbol} (${side})\nClosed Qty: <code>${qtyClosed}</code> | Runner SL → <code>${formatPrice(newSl)}</code>`,
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  async function notifyTrailingSlMoved(symbol: string, side: Side, newSl: number): Promise<void> {
+    await bot.api.sendMessage(
+      targetChatId,
+      `📈 <b>Trailing SL Updated:</b> ${symbol} (${side}) → <code>${formatPrice(newSl)}</code>`,
+      { parse_mode: 'HTML' },
+    );
+  }
+
   bot.command(['start', 'help'], async (ctx) => {
     await ctx.reply(
       [
@@ -273,6 +295,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         '/setmaxpos &lt;n&gt; — Max open positions (1 - 20)',
         '/setdailyloss &lt;pct&gt; — Daily max loss % (0.5 - 20)',
         '/setbe &lt;r&gt; — Break-even SL trigger in R (0 = off)',
+        '/preset &lt;growth10x|conservative&gt; — Apply full strategy preset',
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -293,11 +316,13 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         `Scanner: <b>${s.scannerEnabled ? 'ON' : 'OFF'}</b>`,
         streamLine,
         `Auto-Trade: <b>${s.autoTrade ? 'ON' : 'OFF'}</b>`,
-        `Risk / Trade: <b>${s.riskPct}%</b> | TP: <b>${s.rrRatio}R</b> | Lev: <b>${s.leverage}x</b>`,
-        `Max Positions: <b>${s.maxOpenPositions}</b> (Tracked Open: ${openTrades.length})`,
+        `Risk / Trade: <b>${s.riskPct}%</b> (${s.dynamicRiskEnabled ? 'Dynamic' : 'Flat'}) | TP: <b>${s.rrRatio}R</b> | Lev: <b>${s.leverage}x</b>`,
+        `Max Positions: <b>${s.maxOpenPositions}</b> (Tracked Open: ${openTrades.length}) | Max Notional: <b>${s.maxNotionalEquityMult}x</b>`,
         `Today Net PnL: <b>${todayNetPnl >= 0 ? '+' : ''}$${todayNetPnl.toFixed(2)}</b> | Daily Max Loss: <b>-${s.dailyMaxLossPct}%</b>`,
+        `Partial TP: <b>${s.partialTpAtR > 0 ? `${s.partialTpPct}% @ +${s.partialTpAtR}R` : 'OFF'}</b> | Trail: <b>${s.trailingAtrMult > 0 ? `${s.trailingAtrMult}x ATR` : 'OFF'}</b>`,
         `Break-Even: <b>${s.breakEvenAtR > 0 ? `+${s.breakEvenAtR}R` : 'OFF'}</b> | Min SL: <b>${s.minSlPct}%</b>`,
-        `24h Screener Band: <b>${s.min24hChangePct}% - ${s.max24hChangePct}%</b> | Min Vol: <b>${formatUsd(s.minVolumeUsd)}</b>`,
+        `Regime Filters: <b>ADX &ge; ${s.minAdx}</b> | BTC 1h: <b>${s.btcRegimeFilter ? 'ON' : 'OFF'}</b>`,
+        `Peak Equity: <b>$${s.peakEquityUsd.toFixed(2)}</b> | 24h Band: <b>${s.min24hChangePct}%-${s.max24hChangePct}%</b>`,
       ].join('\n'),
       { parse_mode: 'HTML' },
     );
@@ -527,6 +552,52 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     );
   });
 
+  bot.command('preset', async (ctx) => {
+    const arg = ctx.match.trim().toLowerCase();
+    if (arg !== 'growth10x' && arg !== 'conservative') {
+      await ctx.reply('Usage: /preset growth10x | conservative');
+      return;
+    }
+    if (arg === 'growth10x') {
+      deps.db.setSetting('risk_pct', '2');
+      deps.db.setSetting('rr_ratio', '6');
+      deps.db.setSetting('leverage', '8');
+      deps.db.setSetting('max_open_positions', '4');
+      deps.db.setSetting('daily_max_loss_pct', '6');
+      deps.db.setSetting('break_even_at_r', '1.5');
+      deps.db.setSetting('partial_tp_at_r', '2');
+      deps.db.setSetting('partial_tp_pct', '50');
+      deps.db.setSetting('trailing_atr_mult', '2');
+      deps.db.setSetting('max_notional_equity_mult', '5');
+      deps.db.setSetting('min_adx', '20');
+      deps.db.setSetting('btc_regime_filter', 'true');
+      deps.db.setSetting('dynamic_risk_enabled', 'true');
+      await ctx.reply(
+        '🚀 <b>Preset Applied: GROWTH 10X ($5k → $50k)</b>\nRisk: 2% Dynamic | Partial TP: 50% @ +2R | Runner: 6R / 2x ATR Trail | ADX ≥ 20 | BTC Regime: ON',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    deps.db.setSetting('risk_pct', '1');
+    deps.db.setSetting('rr_ratio', '2');
+    deps.db.setSetting('leverage', '5');
+    deps.db.setSetting('max_open_positions', '3');
+    deps.db.setSetting('daily_max_loss_pct', '3');
+    deps.db.setSetting('break_even_at_r', '1');
+    deps.db.setSetting('partial_tp_at_r', '0');
+    deps.db.setSetting('partial_tp_pct', '0');
+    deps.db.setSetting('trailing_atr_mult', '0');
+    deps.db.setSetting('max_notional_equity_mult', '2');
+    deps.db.setSetting('min_adx', '0');
+    deps.db.setSetting('btc_regime_filter', 'false');
+    deps.db.setSetting('dynamic_risk_enabled', 'false');
+    await ctx.reply(
+      '🛡️ <b>Preset Applied: CONSERVATIVE</b>\nRisk: 1% Flat | Fixed TP: 2R | BE: +1R | Trailing &amp; Regime Filters: OFF',
+      { parse_mode: 'HTML' },
+    );
+  });
+
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
 
@@ -622,6 +693,8 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     notifySignal,
     notifyTradeClosed,
     notifyBreakEvenMoved,
+    notifyPartialTpTaken,
+    notifyTrailingSlMoved,
     registerAdminCommands,
     attachScanner(s: MarketScanner) {
       scanner = s;
