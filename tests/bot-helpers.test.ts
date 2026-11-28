@@ -117,6 +117,31 @@ describe('buildChartLinks & formatSignalMessage', () => {
     );
     expect(msg).toContain(links.tradingViewUrl);
     expect(msg).toContain(links.binanceDemoUrl);
+
+    const liveLinks = buildChartLinks('HUMAUSDT', true);
+    expect(liveLinks.binanceUrl).toBe('https://www.binance.com/en/futures/HUMAUSDT');
+    const liveMsg = formatSignalMessage(
+      {
+        id: 51,
+        symbol: 'HUMAUSDT',
+        side: 'LONG',
+        pattern: 'BULLISH_PULLBACK',
+        candleOpenTime: 1_700_000_000_000,
+        entryPrice: 0.007309,
+        stopLoss: 0.007204,
+        takeProfit: 0.007519,
+        ema21: 0.00725,
+        volumeRatio: 1.5,
+        bodyRatio: 0.8,
+        status: 'PENDING',
+        createdAt: 1_700_000_000_000,
+      },
+      1.5,
+      6,
+      true,
+    );
+    expect(liveMsg).toContain('https://www.binance.com/en/futures/HUMAUSDT');
+    expect(liveMsg).toContain('Binance Futures');
   });
 
   test('escapeHtml escapes <, >, and & safely for Telegram HTML', () => {

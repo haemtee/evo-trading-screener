@@ -15,6 +15,7 @@ export interface TelegramBotDeps {
   db: AppDatabase;
   binance: BinanceFuturesClient;
   executor: TradeExecutor;
+  isLive?: boolean;
 }
 
 export const ADMIN_BOT_COMMANDS = [
@@ -146,21 +147,34 @@ export function formatWatchlistMessage(gainers: WatchlistItem[], losers: Watchli
   return lines.join('\n');
 }
 
-export function buildChartLinks(symbol: string): {
+export function buildChartLinks(
+  symbol: string,
+  isLive = false,
+): {
   tradingViewUrl: string;
+  binanceUrl: string;
   binanceDemoUrl: string;
 } {
   const sym = encodeURIComponent(symbol.toUpperCase());
+  const binanceDemoUrl = `https://demo.binance.com/en/futures/${sym}`;
+  const binanceUrl = isLive ? `https://www.binance.com/en/futures/${sym}` : binanceDemoUrl;
   return {
     tradingViewUrl: `https://www.tradingview.com/chart/?symbol=BINANCE:${sym}.P&interval=15`,
-    binanceDemoUrl: `https://demo.binance.com/en/futures/${sym}`,
+    binanceUrl,
+    binanceDemoUrl,
   };
 }
 
-export function formatSignalMessage(signal: SignalRecord, riskPct: number, rrRatio: number): string {
+export function formatSignalMessage(
+  signal: SignalRecord,
+  riskPct: number,
+  rrRatio: number,
+  isLive = false,
+): string {
   const sideIcon = signal.side === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
   const patternLabel = signal.pattern.replace('_', ' ');
-  const { tradingViewUrl, binanceDemoUrl } = buildChartLinks(signal.symbol);
+  const { tradingViewUrl, binanceUrl } = buildChartLinks(signal.symbol, isLive);
+  const binanceLabel = isLive ? 'Binance Futures' : 'Binance Demo';
   return [
     `🚨 <b>15m Momentum Signal #${signal.id}</b>`,
     ``,
@@ -172,13 +186,16 @@ export function formatSignalMessage(signal: SignalRecord, riskPct: number, rrRat
     `EMA(21): <code>${formatPrice(signal.ema21)}</code>`,
     `Vol Ratio: <b>${signal.volumeRatio.toFixed(2)}x</b> | Body: <b>${(signal.bodyRatio * 100).toFixed(0)}%</b>`,
     `Risk Setting: <b>${riskPct}%</b>`,
-    `Chart (15m): <a href="${tradingViewUrl}">TradingView 15m</a> | <a href="${binanceDemoUrl}">Binance Demo</a>`,
+    `Chart (15m): <a href="${tradingViewUrl}">TradingView 15m</a> | <a href="${binanceUrl}">${binanceLabel}</a>`,
   ].join('\n');
 }
 
 export function createTelegramBot(deps: TelegramBotDeps) {
   const bot = new Bot(deps.token);
   let scanner: MarketScanner | null = null;
+  const isLive = Boolean(deps.isLive);
+  const modeLabel = isLive ? 'Live' : 'Demo';
+  const exchangeLabel = isLive ? 'Binance Futures Live' : 'Binance Futures Demo';
 
   bot.use(async (ctx, next) => {
     if (!isAdminUpdate(ctx.chat?.id, ctx.from?.id, deps.adminChatId)) {
@@ -191,7 +208,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
 
   async function notifySignal(signal: SignalRecord): Promise<void> {
     const settings = deps.db.getSettings();
-    const text = formatSignalMessage(signal, settings.riskPct, settings.rrRatio);
+    const text = formatSignalMessage(signal, settings.riskPct, settings.rrRatio, isLive);
 
     if (settings.autoTrade) {
       await bot.api.sendMessage(targetChatId, text, {
@@ -203,7 +220,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         const warn = res.warning ? `\n⚠️ <b>Warning:</b> ${escapeHtml(res.warning)}` : '';
         await bot.api.sendMessage(
           targetChatId,
-          `✅ <b>Auto-Executed Demo Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b> (${res.trade.leverage}x)${warn}`,
+          `✅ <b>Auto-Executed ${modeLabel} Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b> (${res.trade.leverage}x)${warn}`,
           { parse_mode: 'HTML' },
         );
       } else {
@@ -222,7 +239,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     }
 
     const kb = new InlineKeyboard()
-      .text('✅ Execute Demo Trade', `exec:${signal.id}`)
+      .text(`✅ Execute ${modeLabel} Trade`, `exec:${signal.id}`)
       .text('❌ Skip', `skip:${signal.id}`);
 
     await bot.api.sendMessage(
@@ -274,15 +291,15 @@ export function createTelegramBot(deps: TelegramBotDeps) {
   bot.command(['start', 'help'], async (ctx) => {
     await ctx.reply(
       [
-        '🤖 <b>Evo Trading Screener Bot (Binance Futures Demo)</b>',
+        `🤖 <b>Evo Trading Screener Bot (${exchangeLabel})</b>`,
         '',
         '<b>Screening &amp; Signals:</b>',
         '/watchlist — Top Gainers &amp; Losers (24h Vol &gt; $5M)',
         '/scan — Run immediate 15m momentum scan',
         '',
-        '<b>Demo Account:</b>',
-        '/balance — Binance Demo USDT balance',
-        '/positions — Open demo positions (with Close button)',
+        `<b>${modeLabel} Account:</b>`,
+        `/balance — ${exchangeLabel} USDT balance`,
+        `/positions — Open ${modeLabel.toLowerCase()} positions (with Close button)`,
         '/history — Recent signals &amp; trades',
         '',
         '<b>Settings:</b>',
@@ -363,7 +380,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
       const bal = await deps.binance.getUsdtBalance();
       await ctx.reply(
         [
-          '💰 <b>Binance Futures Demo Balance</b>',
+          `💰 <b>${exchangeLabel} Balance</b>`,
           `Wallet Balance: <b>$${bal.balance.toFixed(2)} USDT</b>`,
           `Available: <b>$${bal.availableBalance.toFixed(2)} USDT</b>`,
           `Unrealized PnL: <b>$${bal.crossUnPnl.toFixed(2)} USDT</b>`,
@@ -380,14 +397,14 @@ export function createTelegramBot(deps: TelegramBotDeps) {
     try {
       const positions = await deps.binance.getOpenPositions();
       if (positions.length === 0) {
-        await ctx.reply('No open positions on Binance Futures Demo.');
+        await ctx.reply(`No open positions on ${exchangeLabel}.`);
         return;
       }
 
       const openTrades = deps.db.getOpenTrades();
       const now = Date.now();
       const kb = new InlineKeyboard();
-      const lines = ['📈 <b>Open Demo Positions</b>\n'];
+      const lines = [`📈 <b>Open ${modeLabel} Positions</b>\n`];
       for (const p of positions) {
         const side = p.positionAmt > 0 ? 'LONG' : 'SHORT';
         const pnlSign = p.unRealizedProfit >= 0 ? '+' : '';
@@ -444,7 +461,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
       }
     }
 
-    lines.push('\n📜 <b>Recent Demo Trades</b>');
+    lines.push(`\n📜 <b>Recent ${modeLabel} Trades</b>`);
     if (trades.length === 0) {
       lines.push('  <i>None</i>');
     } else {
@@ -609,7 +626,7 @@ export function createTelegramBot(deps: TelegramBotDeps) {
         const warn = res.warning ? `\n⚠️ ${escapeHtml(res.warning)}` : '';
         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
         await ctx.reply(
-          `✅ <b>Executed Demo Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Entry: <code>${formatPrice(res.trade.entryPrice)}</code> | SL: <code>${formatPrice(res.trade.stopLoss)}</code> | TP: <code>${formatPrice(res.trade.takeProfit)}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b>${warn}`,
+          `✅ <b>Executed ${modeLabel} Trade #${res.trade.id}</b>\n${res.trade.symbol} ${res.trade.side} | Qty: <code>${res.trade.quantity}</code> | Entry: <code>${formatPrice(res.trade.entryPrice)}</code> | SL: <code>${formatPrice(res.trade.stopLoss)}</code> | TP: <code>${formatPrice(res.trade.takeProfit)}</code> | Risk: <b>$${res.trade.riskUsd.toFixed(2)}</b>${warn}`,
           { parse_mode: 'HTML' },
         );
       } else {

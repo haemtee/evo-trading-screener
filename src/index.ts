@@ -17,6 +17,10 @@ async function main(): Promise<void> {
     marketDataUrl: config.binanceMarketDataUrl,
   });
 
+  const isLive =
+    !config.binanceTradeUrl.toLowerCase().includes('testnet') &&
+    !config.binanceTradeUrl.toLowerCase().includes('demo');
+
   const executor = new TradeExecutor(binance, db);
   const tg = createTelegramBot({
     token: config.telegramBotToken,
@@ -24,6 +28,7 @@ async function main(): Promise<void> {
     db,
     binance,
     executor,
+    isLive,
   });
 
   const scanner = new MarketScanner(
